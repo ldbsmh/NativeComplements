@@ -61,7 +61,7 @@ jobs:
       - name: Build unsigned R8 release
         run: >-
           bash ./gradlew --no-daemon --console=plain --max-workers=2
-          -I tests/unsigned-ci.init.gradle :app:assembleRelease
+          -I ci-unsigned.init.gradle :app:assembleRelease
 
       # 0.10.0 起有 full/window 两个 flavor，产物路径带 flavour 前缀，不能写死。
       - name: Resolve unsigned APK

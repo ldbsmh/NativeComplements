@@ -1,0 +1,9 @@
+// Verification-only build: the fork has no author keystore, so release is unsigned.
+// A fork artifact cannot be installed over an existing signed install until re-signed.
+gradle.beforeProject { project ->
+    project.plugins.withId('com.android.application') {
+        project.extensions.getByName('androidComponents').finalizeDsl { android ->
+            android.buildTypes.getByName('release').signingConfig = null
+        }
+    }
+}
