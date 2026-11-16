@@ -1,0 +1,108 @@
+name: Build APK
+
+# Fork 构建：不依赖作者本地的 verification/ 归档（那是 .gitignore 的），
+# 只跑不需要设备文件的校验，然后出 unsigned APK + mapping.txt 供本地签名。
+# 想装到已装有作者签名的设备上，必须用同一份 keystore 重新签。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'tests/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - '.github/workflows/build-apk.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - '.github/workflows/build-apk.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install pinned Android SDK
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;35.0.0' 'build-tools;36.1.0'
+
+      # verification/ 不在仓库里，读它的脚本会直接抛 FileNotFoundError，
+      # 所以这里只跑能在纯源码上工作的检查。
+      - name: Verify host checks
+        run: |
+          set -e
+          python3 tests/verify_runtime.py
+
+      - name: Build unsigned R8 release
+        run: >-
+          bash ./gradlew --no-daemon --console=plain --max-workers=2
+          -I tests/unsigned-ci.init.gradle :app:assembleRelease
+
+      # 0.10.0 起有 full/window 两个 flavor，产物路径带 flavour 前缀，不能写死。
+      - name: Resolve unsigned APK
+        id: unsigned
+        run: |
+          apk=$(find app/build/outputs/apk -name '*-unsigned.apk' -path '*release*' | sort | head -1)
+          if [ -z "$apk" ]; then
+            echo "::error::no unsigned release APK was produced"
+            exit 1
+          fi
+          echo "apk=$apk" >> "$GITHUB_OUTPUT"
+          echo "unsigned release apk: $apk"
+
+      - name: Label artifact
+        id: apk
+        run: |
+          version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
+          code=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)
+          flavour=$(basename "$(dirname "${{ steps.unsigned.outputs.apk }}")")
+          out="NativeComplements-${flavour:-full}-${version:-unknown}-${code:-0}-UNSIGNED.apk"
+          cp "${{ steps.unsigned.outputs.apk }}" "$out"
+          echo "out=$out" >> "$GITHUB_OUTPUT"
+          {
+            echo "### $out"
+            echo ''
+            echo '未签名产物，不能直接覆盖安装。下载后用自有 keystore 签名：'
+            echo '```'
+            echo "apksigner sign --ks <你的 keystore> --out signed.apk $out"
+            echo '```'
+            echo '```'
+            sha256sum "$out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned APK for local signing
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NativeComplements-UNSIGNED-${{ github.sha }}
+          path: |
+            ${{ steps.apk.outputs.out }}
+            app/build/outputs/mapping/*/release/mapping.txt
+          if-no-files-found: warn
+          retention-days: 14
