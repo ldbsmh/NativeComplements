@@ -1,6 +1,34 @@
 # Alive 实验 AOD：SystemUI 能力、doze 模糊与有界视觉交接
 
-## 当前定位包：code153 / 0.11.5-alive-trace1
+## code155 / 0.11.6-alive-takeover2
+
+- 自有PREPARE/CANCEL不再走wallpaperTarget依赖的WindowSession命令。[直达传输](<../../app/src/full/java/dev/local/sunwindowdemo/features/alive/AliveHandoffTransport.java>)为显式本包、shareIdentity广播，仅同用户SystemUI实际UID+包名接收，非preview已存在Engine动态注册；公开壁纸onCommand只保原生事件，不能转入自有控制。回执仍校真实Engine UID/nonce/defaultdisplay，receiver不创建/唤醒Engine、不改wallpaper flags或授权限。
+- sleep在原系统回调前建立内容episode，精确clockface/通知装饰在安全非interactive门内立即停止输出，不等壁纸ACK或双showing；capture原生更新后同步刷新gate/父invalidate，避免同View重用及缓存父DL漏过。纯LightReveal仍必须实际visible+有效surface成功swap，sleep window flag与native admission继续严格双showing/无认证过渡，不借内容门放宽系统布局。
+- wake纯装饰资格不再要求locked/双showing/非going/fading，真实指纹状态可正常AOD→GONE→应用；真实locked?LOCK:HOME选目标，重复wake的LOCK→HOME沿当前三轨切换、不重seed不续2500ms。遮挡/bouncer/组件用户AOD/ON/interactive/同root/实际首swap/epoch仍受控，原认证/输入/opaque/电源/亮度均未改，不强开应用/壁纸或藏root/UDFPS。普通hidden恢复仍不借旧wake冷seed。
+- 仅原有最小定向及原签名release核验，实机物理呈现不由主机测试冒充；不自动安装/重启/改设置，无手势改动。
+
+## 历史实机结果：code154 未解决目标问题
+
+用户安装完整重启后仍报告按电源闪一帧（未确认是锁屏还是壁纸），应用内息屏马上指纹解锁仍原生动画。22:10只读现机确认154已运行，不能以‘未重启/未加载’解释；不要求再复现。
+
+- 已存本地现场 `takeover154-failure-native.txt` / `takeover154-failure-lspd.txt`。22:10:02.614 native goingtosleep、.617 renderer sleep-presented；.634原生clock doze=1、GONE→AOD与PowerButtonReveal已开始，.638通知alpha=.915；到.726才ACK并开内容门、.733才LightReveal clip。因此约百毫秒的原生早帧未接管，日志不能识别用户看到的具体像素，更不能说只有一帧。
+- 22:10:03.616亮屏，.617旧sleep门撤；.640发wake PREPARE、.652 Engine native ambient-exit、.697 AOD→GONE，.752真实unlocked、renderer1→2；本轮没有任何wake FIRST_SWAP/VISUAL，直到06.139 Host timeout。整个保存的LSPosed样本也无wake FIRST_SWAP。故新wake握手至少在这些样本没有建立，不能仅解释为‘完成认证后正常撤回’或把代码就绪当实机接管成功；Engine未见相应system-wake接收日志。进一步直接解精确services归档DEX证实实际检查在Session.sendWallpaperCommand而非WallpaperController：windowForClient取本Session真实WindowState，非空后只有mCanAlwaysUpdateWallpaper或window==当前getWallpaperTarget才调用unchecked，否则静默return；Session构造由ALWAYS_UPDATE_WALLPAPER权限决定该bool，精确a4bf SystemUI manifest未声明此权限。154wake不保持sleep flag/target，因此该命令通道不能保证送达，吻合PREPARE后无接收/ACK的现场；未直接记录失败瞬间服务端target，故不把单次丢弃条件称已动态截获。精确ControllerUnchecked本体确实无检查、无prevTarget例外，不沿旧版源码猜测。
+- 设计本身还将wake限定locked且Host双showing/!going/!fading，未覆盖AOD→GONE快速认证直达应用。认证状态/输入/遮挡等必须保持系统权威，但‘不修改认证’不等于‘所有认证期间的纯装饰绘制都必须原生’；后续要将纯视觉资格与真实认证状态区分，而非删除安全门或藏root/UDFPS。
+- 154实际只是有条件首swap后抑制部分原生输出，不是用户所要从起始到反向唤醒的完整视觉替换。9项定向/签名构建结果仍成立，但不构成效果通过。未修改运行源码、未自动安装/重启/设置。
+
+## code154 接管尝试的实现（保留，不视为效果验证）
+
+用户要求从减少偶发混播转为视觉接管。153实机21:33:56.430唤醒，.431原sleep clip退出，.440旧episode撤回，.460已有scene真实`0→1 animate=true`；此前hidden约24ms已保scene，因此该样本不是冷wake，确认现有设计在wake主动撤视觉门。原500ms状态/电源链不是要禁掉的对象。
+
+154将睡眠window flag权限与唤醒绘制权限分开：[Handoff](<../../app/src/full/java/dev/local/sunwindowdemo/features/alive/AliveSleepHandoff.java>)原sleep `safe`不向interactive放宽；wake新`PREPARE_WAKE`，独立UID/nonce/defaultdisplay握手及首事件固定≤2500ms绝限，不续期、不沿用7800ms旧sleep令牌。只有[Engine](<../../app/src/full/java/dev/local/sunwindowdemo/features/alive/AliveWallpaperService.java>)真实可见/有效surface/ON/interactive/locked、实际成功swap的回执后，才能裁同root LightReveal输出；不强制wake `FLAG_SHOW_WALLPAPER`、不改原生setAlpha/reveal/opaque回调。Alive端点真实swap且同root原生reveal已到1后才撤wake门（两者可能分别约400/500ms，不按通常时长猜先后），等待原生端点仍受原2500ms硬上限约束，不停原生animator；失败/隐藏/认证/occluded/用户/组件/设置/配置/期限全部回原生。新sleep撤旧wake，重复wake不续期；冷wake仅明确本次真实wake可从AMBIENT起始，普通隐藏恢复仍只当前端点。
+
+新增[内容输出门](<../../app/src/full/java/dev/local/sunwindowdemo/features/alive/AliveVisualContent.java>)仅睡眠已ACK、严格真实showing且非interactive期间，精确clockface小/大View与NotificationStackScrollLayout的父`ViewGroup.drawChild`空clip；原链恰一次/finally恢复canvas，原时钟doze/tick及通知多贡献alpha全部照常，不写alpha/visibility或藏root/UDFPS/auth。实际父类覆盖drawChild、未知布局或ABI时目标原生回退；睡眠真实动画done/status2、cancel或cap触发父/child invalidate，重新呈现最新native状态，不硬restore1。**wake时钟/通知仍走原生交互，本版不是自制Alive时钟动画，也不宣称所有原生像素已替换。** READY前也必须保原生，不能为了零闪提前露出未成功swap的壁纸。
+
+系统AOD值由本用户设置observer缓存，关闭或未知禁止Alive的AMBIENT进出动画及sleep准入（LOCK→HOME仍Alive），不写系统设置；开回再按真实事件重新准入，不复活旧nonce。主包身份/签名/作用域不变。不实现长侧滑：用户本轮已取消，后续上滑变小窗另行接入，无手势修改。
+
+主机最小检查与release证据由本轮收口，硬件RenderNode裁剪/native Hook命中及用户观感仍需测试版安装后验证；不能以编译证明所有ROM/所有动画已替换。不再要求用户泛泛反复抓日志，不自动安装/重启/改设置。
+
+## 历史定位包：code153 / 0.11.5-alive-trace1
 
 本轮只增加可撤销的只读诊断，不替换视觉、不统一AOD开关行为。用户已确认后续目标为系统AOD开时Alive主导亮灭屏、关时保原生；当前壁纸服务仅按组件能力启动sleep的条件仍待修复，不能以本定位包宣称目标已实现。锁屏→AOD原生500ms状态链与电源控制必须保留；原生遮罩、clock doze形变、通知alpha是独立视觉路径，不存在可安全全局关闭的单一动画开关。
 
