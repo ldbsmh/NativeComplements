@@ -23,7 +23,9 @@ import kotlinx.coroutines.withContext
 import dev.local.sunwindowdemo.*
 import dev.local.sunwindowdemo.core.ui.*
 import dev.local.sunwindowdemo.features.callblocking.CallBlockingScreen
+import dev.local.sunwindowdemo.features.smsblocking.SmsBlockingScreen
 import dev.local.sunwindowdemo.features.callblocking.CallBlockingStore
+import dev.local.sunwindowdemo.features.darkaod.DarkAodStore
 import dev.local.sunwindowdemo.features.edgetouch.EdgeTouchScreen
 import dev.local.sunwindowdemo.features.floatingwindow.ui.*
 import dev.local.sunwindowdemo.features.barrage.BarrageHistoryScreen
@@ -90,6 +92,7 @@ fun ModuleApp(
     ) { bottomInset ->
         when (page) {
             Page.Calls, Page.Records -> CallBlockingScreen(page == Page.Records, bottomInset, onRecords = { navigate(Page.Records) })
+            Page.Sms, Page.SmsRecords -> SmsBlockingScreen(page == Page.SmsRecords, bottomInset, onRecords = { navigate(Page.SmsRecords) })
             Page.EdgeTouch -> EdgeTouchScreen(bottomInset)
             Page.Shade -> ShadeScreen(bottomInset)
             Page.Motion -> MotionScreen(controller.apps, controller.catalogLoaded, bottomInset)
@@ -105,11 +108,23 @@ fun ModuleApp(
                 when (page) {
                     Page.Home -> HomeScreen(
                         onWindow = { navigate(Page.Window) }, onAbout = { navigate(Page.About) },
-                        onCalls = { navigate(Page.Calls) }, onEdgeTouch = { navigate(Page.EdgeTouch) },
+                        onHarassment = { navigate(Page.Harassment) },
+                        onEdgeTouch = { navigate(Page.EdgeTouch) },
                         onSuggestions = { navigate(Page.Suggestions) }, onMotion = { navigate(Page.Motion) },
                         onIcons = { navigate(Page.IconLayers) }, onBarrage = { navigate(Page.Barrage) },
                         onShade = { navigate(Page.Shade) }, onAlive = { navigate(Page.Alive) },
                     )
+                    Page.Harassment -> {
+                        SettingsGroup {
+                            SettingRow("来电拦截", onClick = { navigate(Page.Calls) }, leading = { Glyph("phone") })
+                            SettingRow("短信拦截", onClick = { navigate(Page.Sms) }, leading = { Glyph("sms") })
+                        }
+                        GroupTitle("拦截记录")
+                        SettingsGroup {
+                            SettingRow("来电记录", onClick = { navigate(Page.Records) })
+                            SettingRow("短信记录", onClick = { navigate(Page.SmsRecords) })
+                        }
+                    }
                     Page.Window -> {
                         WindowScreen(controller.preferences, navigate, controller::toggleControl,
                             enablePrompt = controller.enablePrompt, enableChecking = controller.enableChecking,
@@ -124,7 +139,7 @@ fun ModuleApp(
                         LaunchedEffect(Unit) {
                             withContext(Dispatchers.IO) {
                                 val c = context.createDeviceProtectedStorageContext()
-                                val keys = listOf("floating_window" to "corner", "barrage" to "barrage", "call_blocking" to "call_blocking", "edge_touch" to "edge_touch", "suggestions" to "suggestions", "motion" to "motion_access", "icon_layers" to "icon_layers", "shade" to "landscape_shade")
+                                val keys = listOf("floating_window" to "corner", "barrage" to "barrage", "call_blocking" to "call_blocking", "sms_blocking" to "sms_blocking", "edge_touch" to "edge_touch", "suggestions" to "suggestions", "motion" to "motion_access", "icon_layers" to "icon_layers", "shade" to "landscape_shade")
                                 keys.forEach { (name, prefs) ->
                                     val storeContext = if (name == "floating_window") context else c
                                     val snapshot = storeContext.getSharedPreferences(prefs, android.content.Context.MODE_PRIVATE)
@@ -267,7 +282,26 @@ private fun AodWallpaperToggle() {
         }
         SettingRow(if (busy) "正在处理…" else if (state == null) "授权 root 并读取状态" else "重新读取状态",
             onClick = if (busy) null else ({ operate() }))
+        DarkAodControls()
     }
+}
+
+@Composable
+private fun DarkAodControls() {
+    val context = LocalContext.current
+    var config by remember { mutableStateOf(DarkAodStore.systemSnapshot(context)) }
+    ToggleRow("暗处暂停 AOD",
+        "LSPosed 实验，默认关闭。持续暗 10 秒暂停息屏显示，持续亮 2 秒恢复；不更改系统 AOD 开关，需系统息屏显示已开启。",
+        config.getBoolean("enabled")) {
+        DarkAodStore.setEnabled(context, it)
+        config = DarkAodStore.systemSnapshot(context)
+    }
+    SliderRow("暗处光照阈值", "默认 1 lux；亮处恢复阈值为 ${config.getFloat("bright_lux").toInt()} lux，可按传感器调整。",
+        value = config.getFloat("dark_lux").toInt(), range = 0..5, unit = " lux", steps = 4,
+        onCommit = {
+            DarkAodStore.setDarkLux(context, it.toFloat())
+            config = DarkAodStore.systemSnapshot(context)
+        })
 }
 
 
