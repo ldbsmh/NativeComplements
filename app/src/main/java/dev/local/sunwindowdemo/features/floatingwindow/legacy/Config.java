@@ -52,6 +52,8 @@ public final class Config {
     boolean doubleClose() { return prefs.getBoolean("doubleClose", false); }
     boolean notificationWindow() { return prefs.getBoolean("notificationWindow", true); }
     boolean landscapeShareWindow() { return prefs.getBoolean("landscapeShareWindow", true); }
+    boolean swipeMini() { return prefs.getBoolean("swipeMini", false); }
+    boolean swipeMiniHint() { return prefs.getBoolean("swipeMiniHint", true); }
     boolean showHeat() { return prefs.getBoolean("showHeat", false); }
     boolean menuBlur() { return prefs.getBoolean("menuBlur", false); }
     int windowDim() { return number("windowDim",DEFAULT_WINDOW_DIM,0,100); }
@@ -114,4 +116,14 @@ public final class Config {
     }
     void apps(List<String> apps) { targets(apps); }
     Set<String> blocked() { return new LinkedHashSet<>(prefs.getStringSet("blocked", Set.of())); }
+    public Set<String> windowExcludedPackages() {
+        Set<String> result = new LinkedHashSet<>();
+        for (String pkg : prefs.getStringSet("windowExcludedPackages", Set.of())) if (Rules.validPackage(pkg)) result.add(pkg);
+        return result;
+    }
+    void windowExcludedPackages(Set<String> packages) {
+        Set<String> clean = new LinkedHashSet<>();
+        for (String pkg : packages) if (Rules.validPackage(pkg)) clean.add(pkg);
+        prefs.edit().putStringSet("windowExcludedPackages", clean).apply();
+    }
 }

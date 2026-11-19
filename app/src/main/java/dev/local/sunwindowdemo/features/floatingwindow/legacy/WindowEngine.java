@@ -30,7 +30,7 @@ final class WindowEngine {
     private Context context;
     private Object wms, root, lock, atm;
     private Handler handler;
-    private Choreographer frames;
+    private Choreographer frames,swipeFrames;
     private WindowAudio audio;
     private TaskCleanupGuard cleanup;
     void installCleanupGuard(io.github.libxposed.api.XposedModule module,ClassLoader loader){
@@ -48,6 +48,7 @@ final class WindowEngine {
     private long uiSeen;
     private boolean uiReady;
     private volatile boolean landscapeShareWindow,endOnClose,keepEdgeAwake;
+    private volatile java.util.Set<String> windowExcludedPackages=java.util.Set.of();
     private volatile boolean autoMinimizeOnOpen=true;
     private WindowContinuation continuation;
     private boolean continuationReady;
@@ -107,9 +108,15 @@ final class WindowEngine {
     private final PathInterpolator modeCurve=new PathInterpolator(.2f,0,0,1);
     private final Binder controlChannel=new Binder(){
         @Override protected boolean onTransact(int code,Parcel data,Parcel reply,int flags) throws RemoteException {
-            if(code==Wire.PREPARE_BACK||code==Wire.CANCEL_BACK||code==Wire.FINISH_BACK){
+            if(code==Wire.PREPARE_BACK||code==Wire.CANCEL_BACK||code==Wire.FINISH_BACK||code==Wire.PREPARE_SWIPE){
                 if(uiUid<0||Binder.getCallingUid()!=uiUid)return false;
                 data.enforceInterface(Wire.CHANNEL);
+                if(code==Wire.PREPARE_SWIPE){
+                    int task=data.readInt();String pkg=data.readString(),token=data.readString();
+                    android.graphics.RectF card=data.readTypedObject(android.graphics.RectF.CREATOR);float radius=data.readFloat();data.enforceNoDataAvail();
+                    boolean accepted=prepareBack(task,pkg,token,card,radius,null,true);
+                    if(reply!=null){reply.writeNoException();reply.writeBoolean(accepted);}return true;
+                }
                 if(code==Wire.CANCEL_BACK){String token=data.readString();data.enforceNoDataAvail();handler.post(()->cancelBackPreparation(token));return true;}
                 if(code==Wire.FINISH_BACK){
                     String token=data.readString();data.enforceNoDataAvail();if(reply==null)return false;
@@ -120,7 +127,7 @@ final class WindowEngine {
                 int task=data.readInt();String pkg=data.readString(),token=data.readString();
                 android.graphics.RectF pose=data.readTypedObject(android.graphics.RectF.CREATOR);float radius=data.readFloat();
                 android.view.SurfaceControl leash=data.readTypedObject(android.view.SurfaceControl.CREATOR);data.enforceNoDataAvail();
-                boolean accepted=prepareBack(task,pkg,token,pose,radius,leash);
+                boolean accepted=prepareBack(task,pkg,token,pose,radius,leash,false);
                 if(leash!=null)leash.release();
                 if(reply!=null){reply.writeNoException();reply.writeBoolean(accepted);}return true;
             }
@@ -143,13 +150,16 @@ final class WindowEngine {
     private volatile Session active,pinned;
     private BackPreparation backPreparation;
     private record BackPreparation(Object task,String token,TaskVisibilityGuard mask,TaskCover cover,IBinder lease){}
-    private boolean prepareBack(int id,String pkg,String token,android.graphics.RectF pose,float radius,android.view.SurfaceControl leash){
+    private boolean prepareBack(int id,String pkg,String token,android.graphics.RectF pose,float radius,android.view.SurfaceControl leash,boolean swipe){
         if(lock==null||handler==null||context==null||!Wire.allowedPackage(pkg)||!Wire.validToken(token))return false;
         synchronized(lock){try{
             if(!uiReady||uiLease==null||!uiLease.isBinderAlive()||SystemClock.elapsedRealtime()-uiSeen>3000
                 ||normalOccupied()||pendingStart!=null
                 ||screenBlocked())return false;
-            Object task=find(id);if(task==null||task!=a.focused.invoke(root)||sessionFor(task)!=null||a.integer(task,"getWindowingMode")!=1)return false;
+            // A swipe-up handoff runs inside the native recents transition, where focus may already
+            // belong to Home; it still requires the exact visible fullscreen task Launcher animated.
+            Object task=find(id);if(task==null||!swipe&&task!=a.focused.invoke(root)||swipe&&!a.bool(task,"isVisibleRequested")
+                ||sessionFor(task)!=null||a.integer(task,"getWindowingMode")!=1)return false;
             ComponentName component=(ComponentName)a.field(task,"realActivity");
             if(component==null||!pkg.equals(component.getPackageName()))return false;
             cancelBackPreparation(null);
@@ -162,6 +172,7 @@ final class WindowEngine {
             TaskCover cover=new TaskCover(a,context,task,parent,pkg,from,from,corner,corner,1,false);
             TaskVisibilityGuard mask=cover.mask;
             BackPreparation prepared=new BackPreparation(task,token,mask,cover,uiLease);backPreparation=prepared;
+            if(swipe)log.accept("SWIPE_COVER_ORDER independent="+cover.independentSwipeLayer());
             mask.preserveBackdrop();
             a.call(root,"ensureActivitiesVisible");
             a.call(wms,"requestTraversal");
@@ -171,9 +182,50 @@ final class WindowEngine {
                     .newInstance(leash,"NativeComplements-back-preview");
                 handler.postDelayed(owned::release,5000);mask.inTransaction(tx,owned);tx.apply();
             }
+            if(swipe&&preview){
+                // Play the card -> mini mask motion now; the window conversion waits for the native
+                // recents transition underneath and adopts this cover at its current pose.
+                Session probe=new Session();probe.task=task;probe.frame="mini";
+                probe.logicalShort=Math.min(bounds.width(),bounds.height());
+                prepareGeometry(probe);
+                cover.resumeTo(visualBounds(probe.placement),coverRadius(probe,probe.placement));
+                driveSwipeCover(prepared);
+            }
             handler.postDelayed(()->{synchronized(lock){if(backPreparation==prepared)cancelBackPreparation(token);}},6500);
-            log.accept("BACK_PREPARED task="+id+" preview="+preview+" from="+from);return true;
+            log.accept((swipe?"SWIPE_PREPARED":"BACK_PREPARED")+" task="+id+" preview="+preview+" from="+from);return true;
         }catch(Throwable failure){cancelBackPreparation(token);log.accept("BACK_PREPARE_FAILED "+FrameworkAccess.reason(failure));return false;}}
+    }
+    private long swipeMotionRemaining(Intent request){
+        if(!"mini".equals(request.getStringExtra("landing")))return 0;
+        synchronized(lock){
+            BackPreparation p=backPreparation;
+            if(p==null||p.cover==null||!p.token.equals(request.getStringExtra("token")))return 0;
+            return p.cover.motionRemaining(SystemClock.elapsedRealtime());
+        }
+    }
+    /** Steps a prepared swipe cover until the open adopts it (pollCover) or the preparation ends. */
+    private void driveSwipeCover(BackPreparation prepared){
+        swipeFrames.postVsyncCallback(new Choreographer.VsyncCallback(){
+            long previous=-1,maxGap;int callbacks;
+            public void onVsync(Choreographer.FrameData data){
+                long frameTime=data.getFrameTimeNanos();
+                long vsyncId=data.getPreferredFrameTimeline().getVsyncId();
+                synchronized(lock){
+                    if(backPreparation!=prepared||prepared.cover==null){
+                        log.accept("SWIPE_COVER_FRAMES callbacks="+callbacks+" maxGapMs="+(maxGap/1_000_000f));return;
+                    }
+                    try{
+                        long now=SystemClock.elapsedRealtime()-Math.max(0,System.nanoTime()-frameTime)/1_000_000L;
+                        prepared.cover.step(false,true,now,vsyncId);
+                        callbacks++;if(previous>=0)maxGap=Math.max(maxGap,frameTime-previous);previous=frameTime;
+                        swipeFrames.postVsyncCallback(this);
+                    }catch(Throwable error){
+                        log.accept("SWIPE_COVER_FAILED "+FrameworkAccess.reason(error));
+                        cancelBackPreparation(prepared.token);
+                    }
+                }
+            }
+        });
     }
     private static boolean validBackPose(android.graphics.RectF p,Rect d){
         return p!=null&&Float.isFinite(p.left)&&Float.isFinite(p.top)&&Float.isFinite(p.right)&&Float.isFinite(p.bottom)
@@ -220,6 +272,18 @@ final class WindowEngine {
     private void completeEntryInput(Session s)throws Exception{
         if(!visible(s)||s.restoring||s.closing||s.fullTransition||s.prioritySuspended||s.screenSuspended||entryInputPending(s))return;
         if("normal".equals(s.frame))focusExpanded(s);
+        else if(s.miniLanding&&"mini".equals(s.frame)){
+            // Same settle as a completed normal->mini morph: release focus to Home, keep the
+            // visible mini resumed, and report STATE_END so SystemUI builds the mini input layer.
+            s.miniLanding=false;
+            synchronized(lock){
+                a.call(s.task,"setFocusable",new Class<?>[]{boolean.class},false);
+                a.call(wms,"updateFocusedWindowLocked",new Class<?>[]{int.class,boolean.class},0,true);
+                a.call(root,"resumeFocusedTasksTopActivities");resumeMini(s);a.call(wms,"requestTraversal");
+            }
+            log.accept("SWIPE_MINI_LANDED task="+s.taskId);
+            report("STATE_END");
+        }
         Intent pending=s.entryControl;s.entryControl=null;
         frameReport("ENTRY_INPUT_READY");
         if(pending!=null)handler.post(()->{if(visible(s)&&!s.restoring&&!s.closing)command(pending);});
@@ -287,6 +351,7 @@ final class WindowEngine {
         Rect lastSurfaceCrop;
         String pkg, token, component, baseId;
         String frame="normal";
+        boolean miniLanding;
         TaskDecoration decoration; volatile boolean presented;
         Point crop; boolean closing; int animationRev; float defaultScale;
         long nextStatus;
@@ -340,6 +405,7 @@ final class WindowEngine {
                 catch(RuntimeException unavailable){log.accept("ICON_ASSETS_UNAVAILABLE "+unavailable.getClass().getSimpleName());}
                 audio=WindowAudio.create(context,handler,log);
                 suggestionInput=ProductFeatures.createInput(a,context,root,lock,handler,log);
+                swipeFrames=Choreographer.getInstance();
                 try{frames=(Choreographer)Choreographer.class.getDeclaredMethod("getSfInstance").invoke(null);}
                 catch(Exception e){frames=Choreographer.getInstance();log.accept("SF_CLOCK_FALLBACK "+e.getClass().getSimpleName());}
             });
@@ -351,6 +417,12 @@ final class WindowEngine {
                         int expected = context.getPackageManager().getApplicationInfo(Wire.PKG, 0).uid;
                         clientUid=expected;uiUid=context.getPackageManager().getApplicationInfo(BackBridge.PACKAGE,0).uid;
                         if(!controlUid(getSentFromUid()))return;
+                        if(i.getIntExtra("protocol",0)==Wire.PROTOCOL&&i.hasExtra("windowExcludedPackages")){
+                            java.util.ArrayList<String> excluded=i.getStringArrayListExtra("windowExcludedPackages");
+                            java.util.HashSet<String> valid=new java.util.HashSet<>();
+                            if(excluded!=null)for(String pkg:excluded)if(Rules.validPackage(pkg))valid.add(pkg);
+                            windowExcludedPackages=java.util.Set.copyOf(valid);
+                        }
                         Bundle extras=i.getExtras();
                         if(getSentFromUid()==uiUid&&i.getIntExtra("protocol",0)==Wire.PROTOCOL&&extras!=null){
                             uiLease=extras.getBinder("lease");uiSeen=SystemClock.elapsedRealtime();
@@ -462,6 +534,16 @@ final class WindowEngine {
             requireUnlocked("先解锁屏幕");
             String pkg = i.getStringExtra("package"), token = i.getStringExtra("token");
             if (!Wire.allowedPackage(pkg) || !Wire.validToken(token)) throw new IllegalArgumentException("目标或标识不匹配");
+            if(windowExcludedPackages.contains(pkg))synchronized(lock){
+                Object target=find(i.getIntExtra("taskId",-1));
+                ComponentName component=target==null?null:(ComponentName)a.field(target,"realActivity");
+                if(target!=null&&component!=null&&pkg.equals(component.getPackageName())
+                    &&(Integer)a.field(target,"mUserId")==0&&sessionFor(target)==null){
+                    cancelBackPreparation(token);
+                    a.call(target,"moveToFront",new Class<?>[]{String.class},"NativeComplements-excluded-native");
+                    completeOpen(i,true);return;
+                }
+            }
             Bundle extras = i.getExtras();
             IBinder lease = uiLease;
             if (lease == null || !lease.isBinderAlive()) throw new IllegalStateException("控制进程已退出");
@@ -497,22 +579,35 @@ final class WindowEngine {
                         prepareGeometry(s); // Bounds hook must know the canvas before switching mode.
                         s.decoration=new TaskDecoration(a);
                         s.entering=true;s.transitioning=true;s.opacity=0;s.barAlpha=0;
-                        if(previous!=null){
-                            if(displaced==null)pinned=previous;
-                            else {previous.parked=true;previous.opacity=0;a.opacity(previous.task,0);
-                                a.call(previous.task,"setFocusable",new Class<?>[]{boolean.class},false);
-                                if(previous.decoration!=null)previous.decoration.hide(previous.task);}
+                        BackPreparation prepared=backPreparation;
+                        boolean adopt=prepared!=null&&prepared.task==s.task&&prepared.token.equals(s.token)&&prepared.lease==lease;
+                        // Swipe-up handoff lands directly in the existing mini slot geometry; the mask
+                        // travels card -> mini, so no intermediate default-window pose is shown.
+                        s.miniLanding=adopt&&prepared.cover!=null&&"mini".equals(i.getStringExtra("landing"));
+                        if(s.miniLanding){
+                            Rect safe=safeArea(a.call(s.task,"getDisplayContent"),false);
+                            s.placement=WindowControl.miniTarget(s.placement,null,s.defaultScale,controlSafe(safe,s.placementMargin),s.miniLarge);
+                            s.miniPlacement=s.placement;s.frame="mini";
                         }
+                        for(Session old:new Session[]{previous,previousPinned}){
+                            if(old==null||old==s)continue;
+                            if(!s.miniLanding&&old==previous&&displaced==null){pinned=previous;continue;}
+                            if(!s.miniLanding&&old!=previous)continue;
+                            old.parked=true;old.opacity=0;a.opacity(old.task,0);
+                            a.call(old.task,"setFocusable",new Class<?>[]{boolean.class},false);
+                            if(old.decoration!=null)old.decoration.hide(old.task);
+                        }
+                        if(s.miniLanding)pinned=null;
                         active = s;
                         frameReport("ENTRY_TOUCH_GUARD");
                         a.call(a.field(s.task,"mTransitionController"),"setNoAnimation",new Class<?>[]{a.wc},s.task);
-                        BackPreparation prepared=backPreparation;
-                        if(prepared!=null&&prepared.task==s.task&&prepared.token.equals(s.token)&&prepared.lease==lease){
+                        if(adopt){
                             prepared.mask.adoptBackdrop();
                             backPreparation=null;
                             if(prepared.cover!=null){
                                 s.entryFade=false;s.cover=prepared.cover;s.coverDrawn=false;s.coverFullscreen=false;
-                                s.cover.entryDecorations(true);
+                                if(s.miniLanding)log.accept("SWIPE_COVER_ADOPT_ORDER independent="+s.cover.independentSwipeLayer());
+                                s.cover.entryDecorations(!s.miniLanding);
                                 s.cover.beforeReveal(()->renderFrame(s));
                                 s.cover.resumeTo(visualBounds(s.placement),a.config(s.task,false).densityDpi/160f*MotionStyle.radius(s.placement.scale(),s.defaultScale));
                                 coverTasks.put(s.task,s);pollCover(s,s.cover);
@@ -533,7 +628,10 @@ final class WindowEngine {
                 }
                 history.windowed(new WindowHistory.Entry(s.taskId,s.userId,s.pkg,s.component,s.baseId));saveHistory();
                 notifyRecents();
-                settleNewDefault(displaced,s);
+                if(s.miniLanding){
+                    for(Session old:new Session[]{previous,previousPinned})
+                        if(old!=null&&old!=s&&sessions.contains(old)&&!old.restoring)finishGroup(old,false,"替换迷你窗");
+                }else settleNewDefault(displaced,s);
                 completeOpen(i,true);
                 note("ACTIVE：小窗已开启，无定时退出");
                 if(SystemClock.elapsedRealtime()>=s.nextStatus) {s.nextStatus=SystemClock.elapsedRealtime()+1000;report("TICK");}
@@ -670,6 +768,14 @@ final class WindowEngine {
                 completeOpen(request,true);clearShortcutLaunch(generation);
                 log.accept("NOTIFICATION_NATIVE_FOREGROUND package="+resolved.state.targetPackage+" task="+id);return;
             }
+            String destination=resolved!=null?resolved.state.targetPackage:pkg;
+            if(windowExcludedPackages.contains(destination)&&sessionFor(candidate[0])==null){
+                synchronized(lock){
+                    a.call(candidate[0],"moveToFront",new Class<?>[]{String.class},"NativeComplements-excluded-native");
+                    a.call(root,"ensureActivitiesVisible");a.call(root,"resumeFocusedTasksTopActivities");
+                }
+                completeOpen(request,true);clearShortcutLaunch(generation);return;
+            }
             synchronized(lock){if(a.entryBusy(candidate[0],false)){
                 waitOpen(request,attempt,"wait-native",id);return;}
             }
@@ -785,14 +891,29 @@ final class WindowEngine {
         return caller!=null&&WindowPolicy.sameWindowCaller((Integer)a.field(request,"launchedFromUid"),realCallingUid,
             a.integer(caller,"getUid"),(String)a.field(request,"launchedFromPackage"),(String)a.field(caller,"packageName"))?caller:null;
     }
+    private boolean nativeWindowRequest(Object request)throws Exception{
+        String pkg=(String)a.field(request,"packageName");
+        Intent intent=(Intent)a.field(request,"intent");
+        return ShareWindow.nativeFullscreenIntent(intent)
+            ||pkg.equals(a.call(context.getPackageManager(),"getPermissionControllerPackageName"));
+    }
+    private boolean excludedNewWindow(String pkg){
+        if(!windowExcludedPackages.contains(pkg))return false;
+        // Do not force a new container while an existing session may be the native target.
+        // Once resolved, startShare/activityStarting apply exclusions to unowned tasks only.
+        for(Session s:sessions)if(pkg.equals(s.pkg)&&!s.restoring)return false;
+        return true;
+    }
     ShareLaunch prepareInstaller(Object request,Object source,ActivityOptions options,int realCallingUid)throws Exception{
-        if(lock==null||context==null||request==null||!ShareWindow.installerIntent((Intent)a.field(request,"intent")))return null;
+        if(lock==null||context==null||request==null)return null;
         synchronized(lock){
+            if(!nativeWindowRequest(request)&&!excludedNewWindow((String)a.field(request,"packageName")))return null;
             source=launchSource(request,source,realCallingUid);
             Object task=source==null?null:a.call(source,"getTask");Session owner=sessionFor(task);
             if(owner==null||owner.restoring||owner.closing||recovering||screenBlocked()
                 ||!a.bool(task,"isVisibleRequested"))return null;
-            log.accept("INSTALLER_NATIVE_FULLSCREEN source="+owner.taskId);
+            if(a.integer(request,"getUid")/100000!=owner.userId)return null;
+            log.accept("INTERACTION_NATIVE_FULLSCREEN source="+owner.taskId);
             return new ShareLaunch(request,ShareWindow.installerOptions(options),null,task,true);
         }
     }
@@ -805,7 +926,7 @@ final class WindowEngine {
             source=launchSource(request,source,realCallingUid);if(source==null)return null;
             if((Boolean)a.call(request,"isResolverOrDelegateActivity")||a.integer(request,"getUid")<10000)return null;
             String pkg=(String)a.field(request,"packageName");
-            if(!Wire.allowedPackage(pkg)||Wire.PKG.equals(pkg)||BackBridge.PACKAGE.equals(pkg)
+            if(excludedNewWindow(pkg)||!Wire.allowedPackage(pkg)||Wire.PKG.equals(pkg)||BackBridge.PACKAGE.equals(pkg)
                 ||dev.local.sunwindowdemo.core.LauncherTargets.isLauncher(pkg)||!UserHandle.getUserHandleForUid(a.integer(request,"getUid")).equals(android.os.Process.myUserHandle()))return null;
             Intent intent=(Intent)a.field(request,"intent");boolean chooser=(Boolean)a.call(source,"isResolverOrDelegateActivity");
             String sourcePkg=(String)a.field(source,"packageName");
@@ -832,6 +953,9 @@ final class WindowEngine {
         Object task=a.call(started,"getTask");
         if(task==null||!launch.lease.isBinderAlive())return null;
         Session retained=sessionFor(task);
+        if(retained==null&&windowExcludedPackages.contains((String)a.field(request,"packageName"))){
+            releaseToFullscreen(task);return null;
+        }
         if(retained!=null){
             // Native ActivityStarter has already delivered the real Intent/grants/result chain.
             // Re-present that exact task; never substitute the package's launcher page.
@@ -860,7 +984,8 @@ final class WindowEngine {
             log.accept("SHARE_WINDOW_ACQUIRED task="+s.taskId+" package="+pkg);
             return new ShareStarted(s,displaced,previous,previousPinned);
         }catch(Exception error){
-            rollbackDefault(s,previous,previousPinned);retire(s);throw error;
+            try{rollbackDefault(s,previous,previousPinned);}finally{fallbackVisible(s);}
+            throw error;
         }
     }
     private void presentShared(Session target,int attempt){
@@ -950,6 +1075,8 @@ final class WindowEngine {
         }}catch(Exception error){log.accept("SHARE_WINDOW_FALLBACK_FAILED "+FrameworkAccess.reason(error));}
     }
     private void rollbackDefault(Session failed,Session previous,Session previousPinned)throws Exception{
+        if(previous!=null&&!live(previous))previous=null;
+        if(previousPinned!=null&&!live(previousPinned))previousPinned=null;
         active=previous;pinned=previousPinned;
         if(previous==null)return;
         previous.parked=false;previous.opacity=1;previous.entering=false;previous.transitioning=false;
@@ -972,7 +1099,8 @@ final class WindowEngine {
             settleNewDefault(ticket.displaced,s);
             history.windowed(new WindowHistory.Entry(s.taskId,s.userId,s.pkg,s.component,s.baseId));saveHistory();notifyRecents();
             handler.postDelayed(()->tick(s),250);report("SHARE_WINDOW_ACTIVE");
-        }}catch(Throwable error){recover("分享小窗启动失败："+FrameworkAccess.reason(error));}});
+        }}catch(Throwable error){synchronized(lock){fallbackVisible(ticket.target);}
+            log.accept("SHARE_WINDOW_PRESENT_FAILED "+FrameworkAccess.reason(error)+"\n"+android.util.Log.getStackTraceString(error));}});
     }
     /** Runs before handleStartResult requests Shell playback. Convert the related
      * task now; never restore the source to fullscreen to acquire its child. */
@@ -1022,7 +1150,7 @@ final class WindowEngine {
                 ||pendingStart!=null||!"normal".equals(s.frame))return null;
             // Native system interactions keep their own dialog/picker presentation,
             // including starts originating inside an existing floating application.
-            if(!ShareWindow.eligibleIntent((Intent)a.field(requestActivity,"intent"),false))return null;
+            if(nativeWindowRequest(requestActivity)||!ShareWindow.eligibleIntent((Intent)a.field(requestActivity,"intent"),false))return null;
             Object sourceTask=source==null?null:a.call(source,"getTask"),target=a.call(started,"getTask");
             if(target==null)return null;
             if(target==s.task){
@@ -1048,6 +1176,10 @@ final class WindowEngine {
             if(keepNativeForeground(launchForeground.get(),target,(String)a.field(requestActivity,"packageName"),
                 (Integer)a.field(target,"mUserId"),a.call(target,"getDisplayContent")))return null;
             Session next=sessionFor(target);
+            if(next==null&&windowExcludedPackages.contains(component.getPackageName())){
+                // This verified child inherited our mode, but has not acquired any masks or ownership.
+                releaseToFullscreen(target);return null;
+            }
             boolean fresh=next==null;
             if(fresh){
                 if(sessions.size()>=MAX_LINKED_TASKS)throw new IllegalStateException("关联小窗数量已达上限");
@@ -1062,13 +1194,19 @@ final class WindowEngine {
             pendingStart=ticket;
             maskAndActivate(next,target,s.placement);
             handler.postDelayed(()->{
-                if(pendingStart==ticket){cancelStart("start-timeout");recover("关联任务启动超时");}
+                if(pendingStart==ticket)synchronized(lock){cancelStart("start-timeout");fallbackVisible(ticket.target);}
             },10000);
             log.accept("LINKED_START from="+s.taskId+" to="+next.taskId+" retained="+sessions.size()+" created="+fresh);
             return ticket;
         }}catch(Exception e){
             SwitchStart failed=pendingStart;cancelStart("start-failed");
-            if(created!=null||failed!=null)handler.post(()->recover("关联任务接管失败"));
+            if(created!=null){
+                Session destination=created;
+                handler.post(()->{synchronized(lock){fallbackVisible(destination);}});
+            }else if(failed!=null){
+                Session destination=failed.target;
+                handler.post(()->{synchronized(lock){fallbackVisible(destination);}});
+            }
             log.accept("LINKED_START_FAILED "+FrameworkAccess.reason(e));return null;
         }
     }
@@ -1108,7 +1246,8 @@ final class WindowEngine {
                     saveHistory();notifyRecents();handler.postDelayed(()->tick(next),250);
                 }
                 report("LINKED_ACTIVE");
-            }}catch(Throwable e){recover("关联小窗切换失败："+FrameworkAccess.reason(e));}
+            }}catch(Throwable e){synchronized(lock){fallbackVisible(ticket.target);}
+                log.accept("LINKED_PRESENT_FAILED "+FrameworkAccess.reason(e));}
         });
     }
     private void cancelStart(String reason){
@@ -1177,6 +1316,10 @@ final class WindowEngine {
         if(cleanup!=null)cleanup.acquired(next.pkg,next.userId,next.uid);
         next.screenSuspended=false;
         Session previous=active;
+        if(previous!=null&&previous!=next&&!live(previous)){
+            if(pinned==previous)pinned=null;
+            active=null;endCover(previous);retire(previous);previous=null;
+        }
         boolean continuousDim=previous!=null&&previous!=next&&"normal".equals(previous.frame)&&"normal".equals(next.frame)
             &&previous.decoration!=null&&!previous.screenSuspended;
         if(next.decoration==null)next.decoration=new TaskDecoration(a);
@@ -1270,6 +1413,15 @@ final class WindowEngine {
             return true;
         }}catch(Exception e){log.accept("LINKED_RETURN_FAILED "+FrameworkAccess.reason(e));return false;}
     }
+    /** Failed acquisition is not a close: restore the actual destination visibly. */
+    private void fallbackVisible(Session s){
+        if(active==s)active=null;
+        if(pinned==s)pinned=null;
+        s.restoreForeground=true;s.restoring=true;s.parked=false;s.animationRev++;
+        s.entering=false;s.transitioning=false;
+        endCover(s);
+        restoreRetired(s,0);
+    }
     private void retire(Session s){
         if(s==active||s.restoring)return;
         s.restoring=true;s.parked=true;s.animationRev++;
@@ -1278,7 +1430,7 @@ final class WindowEngine {
     private void restoreRetired(Session s,int attempt){
         if(recovering||!sessions.contains(s))return;
         try{synchronized(lock){
-            if(restoreTask(s,false)){forget(s);report("LINKED_REMOVED");return;}
+            if(restoreTask(s,s.restoreForeground)){forget(s);report("LINKED_REMOVED");return;}
         }
             if(attempt>=100){recover("关联任务恢复超时");return;}
             handler.postDelayed(()->restoreRetired(s,attempt+1),100);
@@ -1561,7 +1713,9 @@ final class WindowEngine {
     }
     // A destination replaces its occupant; the source never swaps the other slot.
     private void settleNewDefault(Session previous,Session next)throws Exception{
-        if(previous==null||previous==next||previous.token.equals(next.token))return;
+        // The native start may have finished its forwarding task after the ticket captured it.
+        if(previous==null||previous==next||!sessions.contains(previous)||previous.restoring
+            ||previous.token.equals(next.token)||!live(previous))return;
         WindowControl.Previous decision=WindowControl.previous(true,true,false,previous.frame,autoMinimizeOnOpen,
             !"mini".equals(previous.frame)&&pinned!=null&&pinned!=previous&&live(pinned)&&"mini".equals(pinned.frame));
         if(decision==WindowControl.Previous.RETAIN_MINI){
@@ -1688,6 +1842,7 @@ final class WindowEngine {
                         if(full)finishGroup(s,true,"小窗动画进入全屏");
                         else{
                             synchronized(lock){
+                                if(s.edgeHidden)renderFrame(s);
                                 a.call(s.task,"setFocusable",new Class<?>[]{boolean.class},!"mini".equals(s.frame));
                                 if(modeChange&&!"mini".equals(s.frame))focusExpanded(s);
                                 // Home/recents must see the real foreground task. Resume
@@ -1879,11 +2034,11 @@ final class WindowEngine {
                 if(oldMiniSafe!=null&&previous!=null){
                     Geometry.Placement mini="mini".equals(s.frame)&&!s.edgeHidden?previous:oldMini;
                     if(rotated){
-                        s.resizing=false;s.edgeHidden=false;s.edgeSide=0;
+                        s.resizing=false;
                         if(s.miniDragBase!=null)s.opacity=s.miniDragOpacity;
                         s.miniDragBase=null;s.edgeDragBase=null;s.edgeBarDragging=false;
                     }
-                    else if(mini!=null)s.miniPlacement=Geometry.remapMini(mini,s.normalPlacement,s.defaultScale,
+                    if(mini!=null)s.miniPlacement=Geometry.remapMini(mini,s.normalPlacement,s.defaultScale,
                         oldMiniSafe.left,oldMiniSafe.top,oldMiniSafe.right,oldMiniSafe.bottom,oldMargin,
                         safe.left,safe.top,safe.right,safe.bottom,s.placementMargin,s.miniLarge);
                     s.placement="mini".equals(s.frame)?s.miniPlacement:s.normalPlacement;
@@ -1967,10 +2122,22 @@ final class WindowEngine {
         if(a.integer(s.task,"getWindowingMode")!=(s.coverFullscreen?1:5))return false;
         Configuration reported=(Configuration)a.call(a.field(window,"mLastReportedConfiguration"),"getMergedConfiguration");
         Object wc=a.field(reported,"windowConfiguration"),display=a.call(s.task,"getDisplayContent");
-        if(display==null||a.integer(wc,"getWindowingMode")!=(s.coverFullscreen?1:5)
-            ||a.integer(wc,"getRotation")!=a.integer(display,"getRotation"))return false;
+        if(display==null||a.integer(wc,"getRotation")!=a.integer(display,"getRotation"))return false;
         Rect actual=(Rect)a.call(wc,"getBounds"),expected=s.coverFullscreen?(Rect)a.call(display,"getBounds"):new Rect(0,0,s.placement.width(),s.placement.height());
-        return actual.width()==expected.width()&&actual.height()==expected.height();
+        if(s.coverFullscreen)return a.integer(wc,"getWindowingMode")==1&&actual.width()==expected.width()&&actual.height()==expected.height();
+        // Non-resizable activities may retain native floating size-compat insets inside the
+        // correct task canvas. Match their current resolved window viewport, not task height.
+        // Read WM's native cached report, never the outgoing client fullscreen facade.
+        Configuration live=a.config(window,false);
+        Object current=a.field(live,"windowConfiguration");
+        Rect resolved=(Rect)a.call(current,"getBounds");
+        return expected.equals(a.call(s.task,"getBounds"))&&!resolved.isEmpty()&&expected.contains(resolved)
+            &&a.integer(current,"getWindowingMode")==5
+            &&a.integer(wc,"getWindowingMode")==5
+            &&a.integer(current,"getRotation")==a.integer(display,"getRotation")
+            &&actual.equals(resolved)&&reported.densityDpi==live.densityDpi
+            &&reported.orientation==live.orientation&&reported.screenWidthDp==live.screenWidthDp&&reported.screenHeightDp==live.screenHeightDp
+            &&java.util.Objects.equals(a.call(wc,"getAppBounds"),a.call(current,"getAppBounds"));
     }
     void drawingFinished(Object window,int seq){
         if(lock==null)return;
@@ -2027,7 +2194,11 @@ final class WindowEngine {
                         frames.postFrameCallback(this);
                     }catch(Throwable error){
                         log.accept("COVER_RELEASED task="+s.taskId+" "+FrameworkAccess.reason(error)+" state="+cover.state());
-                        s.opacity=0;endCover(s);handler.post(()->{if(sessions.contains(s)&&!s.restoring)recover("遮罩目标未就绪");});
+                        s.opacity=0;endCover(s);handler.post(()->{synchronized(lock){
+                            if(!sessions.contains(s)||s.restoring)return;
+                            if(active==s&&!s.closing&&!s.fullTransition)fallbackVisible(s);
+                            else recover("遮罩目标未就绪");
+                        }});
                     }
                 }
             }
@@ -2167,6 +2338,17 @@ final class WindowEngine {
     }
     private void gestureStart(Intent request){
         try{
+            // Swipe-to-mini: let the prepared mask finish its card -> mini motion on the frame clock
+            // first; open attempts while it plays would compete with it on this thread.
+            long motion=swipeMotionRemaining(request);
+            if(motion>0){
+                long generation=openGeneration;
+                handler.postDelayed(()->{
+                    if(generation!=openGeneration){cancelBackPreparation(request.getStringExtra("token"));completeOpen(request,false);return;}
+                    gestureStart(request);
+                },motion);
+                return;
+            }
             if(waitForRecovery(request,()->gestureStart(request)))return;
             if(normalOccupied())throw new IllegalStateException("默认窗已被占用");
             synchronized(lock){
@@ -2269,9 +2451,29 @@ final class WindowEngine {
     // Native Task resume is gated on focusability, also used to choose Home and
     // recents' running task. Keep that gate intact. A visible mini can use the
     // same native fragment lifecycle path without becoming the focused task.
+    private void yieldMiniFocus(Session s){
+        try{synchronized(lock){
+            if(!visible(s)||!sessions.contains(s)||!"mini".equals(s.frame)||s.restoring||s.transitioning||s.closing||s.parked||s.fullTransition
+                ||s.screenSuspended||s.prioritySuspended||!s.lease.isBinderAlive()||screenBlocked()
+                ||a.bool(s.task,"isFocusable"))return;
+            Object display=a.call(s.task,"getDisplayContent"),focusedApp=a.field(display,"mFocusedApp");
+            if(focusedApp==null||a.call(focusedApp,"getTask")!=s.task)return;
+            Object target=a.focused.invoke(root);
+            if(target==null||target==s.task||!a.bool(target,"isFocusable")||!a.bool(target,"isVisibleRequested")
+                ||a.call(target,"getDisplayContent")!=display||(Integer)a.field(target,"mUserId")!=s.userId)return;
+            Object top=a.call(target,"topRunningActivity");
+            if(top==null||(Boolean)a.field(top,"finishing")||!a.bool(top,"isVisibleRequested")
+                ||!a.bool(top,"attachedToProcess"))return;
+            // Window focus alone does not update InputDispatcher's focused application.
+            a.call(display,"setFocusedApp",new Class<?>[]{a.activity},top);
+            a.call(wms,"updateFocusedWindowLocked",new Class<?>[]{int.class,boolean.class},0,true);
+            log.accept("MINI_FOCUS_YIELDED task="+s.taskId+" target="+a.field(target,"mTaskId"));
+        }}catch(Exception|LinkageError error){log.accept("MINI_FOCUS_YIELD_UNAVAILABLE "+FrameworkAccess.reason(error));}
+    }
     private void resumeMini(Session s){
-        if(s==null||!WindowLifecycle.resumeMini(visibleResumeReady,visible(s),s.frame,s.transitioning,s.backRequested,pendingStart!=null))return;
+        if(s==null)return;
         try{
+            if(!WindowLifecycle.resumeMini(visibleResumeReady,visible(s),s.frame,s.transitioning,s.backRequested,pendingStart!=null))return;
             Object top=a.call(s.task,"topRunningActivity");if(top==null)return;
             String state=String.valueOf(a.call(top,"getState"));
             if(!WindowLifecycle.resumableState(state))return;
@@ -2281,7 +2483,7 @@ final class WindowEngine {
         }catch(Exception e){
             // This optional continuation must not trigger fullscreen recovery.
             visibleResumeReady=false;log.accept("MINI_RESUME_UNAVAILABLE "+FrameworkAccess.reason(e));
-        }
+        }finally{yieldMiniFocus(s);}
     }
     boolean ownsActivityToken(IBinder token)throws Exception{
         // A provisional share launch owns its request before any session exists.
@@ -2775,10 +2977,13 @@ final class WindowEngine {
         }
         if(admission!=WindowPresentation.Route.PROBE_NATIVE)return;
         updatePriorityState(s);
+        // Park the owned subtree, not merely its screen coordinates. The recovery handle is a separate UI window.
+        boolean contentHidden=s.screenSuspended||WindowPresentation.edgeContentHidden(s.edgeHidden,s.transitioning,
+            s.edgeDragBase!=null,s.edgeBarDragging);
         if(s.decoration!=null)s.decoration.updateBacking(s.task,s.placement.width(),s.placement.height(),
-            WindowPresentation.backing(s.prioritySuspended,s.parked,s.screenSuspended));
+            WindowPresentation.backing(s.prioritySuspended,s.parked,contentHidden));
         WindowPresentation.Route route=WindowPresentation.gate(new WindowPresentation.Facts(true,true,false,true,
-            s.prioritySuspended,s.priorityHideTask,s.parked,s.screenSuspended,
+            s.prioritySuspended,s.priorityHideTask,s.parked,contentHidden,
             s.startMask!=null&&s.startMask.holding(),s.rotation.active()&&!s.rotation.fading()));
         presentation.apply(s,route);
     }
@@ -2786,6 +2991,8 @@ final class WindowEngine {
         if(s.prioritySuspended){if(s.decoration!=null)s.decoration.hide(s.task);return;}
         if(s.decoration!=null){
             boolean wasPresented=s.presented;
+            s.decoration.dark((context.getResources().getConfiguration().uiMode
+                &android.content.res.Configuration.UI_MODE_NIGHT_MASK)==android.content.res.Configuration.UI_MODE_NIGHT_YES);
             s.decoration.dimAmount(windowDim);
             float decorationAlpha=s.barAlpha*s.rotation.alpha(SystemClock.elapsedRealtime());
             boolean drawn=s.cover==null?s.decoration.update(s.task,s.parent,p,density,s.displayW>s.displayH,decorationAlpha,structural)
@@ -2796,7 +3003,7 @@ final class WindowEngine {
                 log.accept("PRESENTED task="+s.taskId+" elapsedMs="+(SystemClock.elapsedRealtime()-s.startedAt));
                 if(s.entering&&!s.entryStarted){
                     s.entryStarted=true;
-                    if(s.cover!=null){s.entering=false;s.transitioning=false;s.opacity=1;s.barAlpha=1;try{synchronized(lock){renderFrame(s);}}catch(Exception e){failure(s,e);}}
+                    if(s.cover!=null){s.entering=false;s.transitioning=false;s.opacity=1;s.barAlpha="mini".equals(s.frame)?0:1;try{synchronized(lock){renderFrame(s);}}catch(Exception e){failure(s,e);}}
                     else visibility(s,true);
                 }
                 else report("PRESENTED");
@@ -3158,7 +3365,10 @@ final class WindowEngine {
             case REJECT: throw new IllegalStateException("恢复任务身份已改变");
             case RESTORE: break;
         }
-        boolean surfaceAttached=attached&&a.bool(task,"isAttached");
+        boolean hierarchyAttached=attached&&a.bool(task,"isAttached");
+        android.view.SurfaceControl surface=hierarchyAttached?(android.view.SurfaceControl)a.field(task,"mSurfaceControl"):null;
+        boolean surfaceAttached=hierarchyAttached&&surface!=null&&surface.isValid();
+        if(hierarchyAttached&&!surfaceAttached&&a.call(task,"topRunningActivity")!=null)return false;
         if(surfaceAttached){
             Object display=a.call(task,"getDisplayContent");
             if(display==null||(Integer)a.field(display,"mDisplayId")!=0||!a.bool(task,"isRootTask")
@@ -3296,7 +3506,8 @@ final class WindowEngine {
                 java.util.ArrayList<Session> ordered=new java.util.ArrayList<>(sessions);
                 if(selected!=null){ordered.remove(selected);ordered.add(selected);}
                 for(Session s:ordered){
-                    s.restoreForeground=s==selected&&("小窗动画进入全屏".equals(why)||"手动恢复".equals(why));
+                    s.restoreForeground=s.restoring&&s.restoreForeground
+                        ||s==selected&&("小窗动画进入全屏".equals(why)||"手动恢复".equals(why));
                     s.restoring=true;s.animationRev++;s.entering=false;s.transitioning=false;s.opacity=0;
                     s.backRequested=false;s.recoveryReason=why;
                     if(s.task!=null&&a.bool(s.task,"isAttached")){

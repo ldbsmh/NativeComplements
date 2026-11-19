@@ -33,6 +33,7 @@ import dev.local.sunwindowdemo.features.barrage.BarrageHistoryScreen
 import dev.local.sunwindowdemo.features.barrage.BarrageScreen
 import dev.local.sunwindowdemo.features.gamemode.GameModeScreen
 import dev.local.sunwindowdemo.features.gamemode.GameQuickScreen
+import dev.local.sunwindowdemo.features.gamemode.GameCornerScreen
 import dev.local.sunwindowdemo.features.iconlayers.IconDiagnosticsScreen
 import dev.local.sunwindowdemo.features.iconlayers.IconLayerScreen
 import dev.local.sunwindowdemo.features.iconlayers.IconBatchDialog
@@ -68,10 +69,12 @@ fun ModuleApp(
     fun cancelIconBatch() { iconBatch = false; showIconBatch = false; iconSelection = emptyList() }
     BackHandler(selectingIcons && !showIconBatch) { cancelIconBatch() }
     val iconApp = if (page == Page.IconApp) controller.apps.firstOrNull { it.packageName == appPackage } else null
+    var windowExclusions by rememberSaveable(page) { mutableStateOf(false) }
+    BackHandler(windowExclusions) { windowExclusions = false }
     var query by rememberSaveable(page) { mutableStateOf("") }
     var searching by rememberSaveable(page) { mutableStateOf(false) }
     var appsTab by rememberSaveable { mutableStateOf(true) }
-    val searchable = when (page) {
+    val searchable = windowExclusions || when (page) {
         Page.GameMode, Page.Motion, Page.IconLayers, Page.Blocked -> true
         Page.GameQuick -> appsTab
         else -> false
@@ -81,12 +84,12 @@ fun ModuleApp(
     BackHandler(searchOpen && !showIconBatch) { closeSearch() }
     // Standard Activity navigation leaves predictive Back and its animation with Android.
     SettingsPage(
-        title = when (page) {
+        title = if (windowExclusions) "不以小窗打开的应用" else when (page) {
             Page.IconLayers -> if (selectingIcons) "已选择 ${selectedIcons.size} 个应用" else page.title
             Page.IconApp -> iconApp?.label ?: "图标设置"
             else -> page.title
         },
-        onBack = if (searchOpen) ::closeSearch else if (page == Page.Home) null else if (selectingIcons) ({ cancelIconBatch() }) else back,
+        onBack = if (searchOpen) ::closeSearch else if (windowExclusions) ({ windowExclusions = false }) else if (page == Page.Home) null else if (selectingIcons) ({ cancelIconBatch() }) else back,
         expandedTitle = !selectingIcons && !searchOpen,
         titleContent = if (searchOpen) ({ AppQueryField(query) { query = it } }) else null,
         actions = {
@@ -112,14 +115,16 @@ fun ModuleApp(
         },
     ) { bottomInset ->
         CompositionLocalProvider(LocalAppQuery provides (if (searchOpen) query else "")) {
-        when (page) {
+        if (windowExclusions) AppPickerScreen(controller, bottomInset = bottomInset, windowExclusions = true)
+        else when (page) {
             Page.Calls, Page.Records -> CallBlockingScreen(page == Page.Records, bottomInset, onRecords = { navigate(Page.Records) })
             Page.Sms, Page.SmsRecords -> SmsBlockingScreen(page == Page.SmsRecords, bottomInset, onRecords = { navigate(Page.SmsRecords) })
             Page.EdgeTouch -> EdgeTouchScreen(bottomInset)
             Page.Shade -> ShadeScreen(bottomInset)
             Page.Motion -> MotionScreen(controller.apps, controller.catalogLoaded, bottomInset)
             Page.GameMode -> GameModeScreen(controller.apps, controller.catalogLoaded, bottomInset,
-                onQuick = { navigate(Page.GameQuick) }, onBarrage = { navigate(Page.Barrage) })
+                onQuick = { navigate(Page.GameQuick) }, onBarrage = { navigate(Page.Barrage) }, onCorner = { navigate(Page.GameCorner) })
+            Page.GameCorner -> GameCornerScreen(bottomInset)
             Page.GameQuick -> GameQuickScreen(controller.apps, controller.catalogLoaded, bottomInset, onAppTabChanged = {
                 appsTab = it
                 if (!it) closeSearch()
@@ -162,7 +167,8 @@ fun ModuleApp(
                     Page.SuggestionApps -> SuggestionAppsScreen()
                     Page.Gestures -> GestureScreen(controller.preferences, controller::boolean, controller::number)
                     Page.Behavior -> BehaviorScreen(controller.preferences, controller::boolean, controller::number)
-                    Page.Prevention -> PreventionScreen(controller.preferences, controller::boolean, { navigate(Page.Blocked) })
+                    Page.Prevention -> PreventionScreen(controller.preferences, controller::boolean, { navigate(Page.Blocked) },
+                        windowExclusions = { windowExclusions = true })
                     Page.About -> AboutScreen(onLicenses = { navigate(Page.Licenses) }, onTools = { navigate(Page.Tools) }, onLogs = { navigate(Page.Logs) })
                     Page.Logs -> {
                         LaunchedEffect(Unit) {
@@ -247,6 +253,15 @@ private fun DeveloperTools(onWindow: () -> Unit, onIcons: () -> Unit) {
     val context = LocalContext.current
     var calls by remember { mutableStateOf(CallBlockingStore.readConfig(context)) }
     var motion by remember { mutableStateOf(MotionStore.read(context)) }
+    var gameRegions by remember { mutableStateOf(dev.local.sunwindowdemo.features.gamemode.GameModeStore.read(context).getBoolean("corner_show_regions")) }
+    DisposableEffect(context) {
+        val prefs = dev.local.sunwindowdemo.features.gamemode.GameModeStore.prefs(context)
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            gameRegions = dev.local.sunwindowdemo.features.gamemode.GameModeStore.read(context).getBoolean("corner_show_regions")
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     fun rotationStatus(): String {
         val p = context.createDeviceProtectedStorageContext().getSharedPreferences("rotation_status", 0)
         return listOf("version", "hook", "launcher_hook", "request", "host", "settings", "window", "click").joinToString("\n") {
@@ -257,6 +272,9 @@ private fun DeveloperTools(onWindow: () -> Unit, onIcons: () -> Unit) {
     SettingsGroup {
         SettingRow("小窗诊断与恢复", onClick = onWindow)
         SettingRow("图标实验与诊断", onClick = onIcons)
+        ToggleRow("显示游戏防误触范围", value = gameRegions) {
+            dev.local.sunwindowdemo.features.gamemode.GameModeStore.showCornerRegions(context, it)
+        }
     }
     GroupTitle("其他服务")
     SettingsGroup {

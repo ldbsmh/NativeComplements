@@ -31,10 +31,14 @@ final class ProductFeatures {
         try{dev.local.sunwindowdemo.features.shade.StatusBarOffset.connect(app);}
         catch(RuntimeException unavailable){note.accept("STATUS_BAR_CONNECT_FAILED "+unavailable.getClass().getSimpleName());}
         dev.local.sunwindowdemo.features.shade.SignalDisplay.connect(app);
+        DesktopSleepHost.connect(app,note);
         RotationSuggestion.connect(app);
     }
-    static void installLauncher(XposedModule module,ClassLoader loader,Consumer<String> note){LauncherRotationSuggestion.install(module,loader,note);}
-    static void connectLauncher(Context context){LauncherRotationSuggestion.connect(context);}
+    static void installLauncher(XposedModule module,ClassLoader loader,Consumer<String> note){
+        LauncherRotationSuggestion.install(module,loader,note);
+        DesktopDoubleTap.install(module,loader,note);
+    }
+    static void connectLauncher(Context context){LauncherRotationSuggestion.connect(context);DesktopDoubleTap.connect(context);}
     static Consumer<Intent> createInput(FrameworkAccess access,Context context,Object root,Object lock,Handler handler,Consumer<String> log){
         try{SuggestionInput input=new SuggestionInput(access,context,root,lock,handler);log.accept("SUGGESTIONS_INPUT_READY");return input::start;}
         catch(Exception unavailable){log.accept("SUGGESTIONS_INPUT_UNAVAILABLE "+unavailable.getClass().getSimpleName());return null;}
@@ -127,11 +131,11 @@ final class ProductFeatures {
         public void environment(String foreground,boolean fullscreen,boolean systemFocus,String title,boolean keyboard,boolean screenshotVisible,boolean panelShown,boolean openWaitShown,int imeTop,String actualForeground){
             boolean suspended=BarrageHost.shouldSuspend(systemFocus,title,keyboard,panelShown,openWaitShown);
             if(barrage!=null)barrage.environment(foreground,fullscreen,suspended,actualForeground);
-            if(gameMode!=null)gameMode.environment(foreground,fullscreen,suspended||screenshotVisible);
+            if(gameMode!=null)gameMode.environment(foreground,fullscreen,suspended||screenshotVisible,actualForeground);
             if(suggestions!=null)suggestions.environment(screenshotVisible||systemFocus||panelShown||openWaitShown,imeTop);
         }
         public void edgeEnvironment(boolean systemOverlay,boolean keyboard){if(edgeTouch!=null)edgeTouch.setEnvironment(systemOverlay,keyboard);}
-        public void protectedRects(int[] rectangles){if(edgeTouch!=null)edgeTouch.setProtectedRects(rectangles);}
+        public void protectedRects(int[] rectangles){if(edgeTouch!=null)edgeTouch.setProtectedRects(rectangles);if(gameMode!=null)gameMode.protectedRects(rectangles);}
         public void closeBarrage(){if(barrage!=null){barrage.close();barrage=null;}if(gameMode!=null){gameMode.close();gameMode=null;}}
         public void close(){if(suggestions!=null){suggestions.close();suggestions=null;}if(edgeTouch!=null){edgeTouch.close();edgeTouch=null;}}
     }
