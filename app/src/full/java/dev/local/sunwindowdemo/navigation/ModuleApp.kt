@@ -31,6 +31,10 @@ import dev.local.sunwindowdemo.features.edgetouch.EdgeTouchScreen
 import dev.local.sunwindowdemo.features.floatingwindow.ui.*
 import dev.local.sunwindowdemo.features.barrage.BarrageHistoryScreen
 import dev.local.sunwindowdemo.features.barrage.BarrageScreen
+import dev.local.sunwindowdemo.features.background.BackgroundAppActions
+import dev.local.sunwindowdemo.features.background.BackgroundAppScreen
+import dev.local.sunwindowdemo.features.background.BackgroundWakeLockScreen
+import dev.local.sunwindowdemo.features.background.BackgroundList
 import dev.local.sunwindowdemo.features.gamemode.GameModeScreen
 import dev.local.sunwindowdemo.features.gamemode.GameQuickScreen
 import dev.local.sunwindowdemo.features.gamemode.GameCornerScreen
@@ -55,6 +59,7 @@ fun ModuleApp(
     back: () -> Unit,
     appPackage: String? = null,
     openIconApp: (String) -> Unit = {},
+    openBackgroundApp: (String) -> Unit = {},
 ) {
     if (page == Page.Alive) {
         dev.local.sunwindowdemo.features.alive.AliveScreen(onBack = back)
@@ -75,7 +80,8 @@ fun ModuleApp(
     var searching by rememberSaveable(page) { mutableStateOf(false) }
     var appsTab by rememberSaveable { mutableStateOf(true) }
     val searchable = windowExclusions || when (page) {
-        Page.GameMode, Page.Motion, Page.IconLayers, Page.Blocked -> true
+        Page.GameMode, Page.Motion, Page.IconLayers, Page.Blocked, Page.Background,
+        Page.BackgroundWakeLocks -> true
         Page.GameQuick -> appsTab
         else -> false
     }
@@ -87,6 +93,7 @@ fun ModuleApp(
         title = if (windowExclusions) "不以小窗打开的应用" else when (page) {
             Page.IconLayers -> if (selectingIcons) "已选择 ${selectedIcons.size} 个应用" else page.title
             Page.IconApp -> iconApp?.label ?: "图标设置"
+            Page.BackgroundApp -> controller.apps.firstOrNull { it.packageName == appPackage }?.label ?: page.title
             else -> page.title
         },
         onBack = if (searchOpen) ::closeSearch else if (windowExclusions) ({ windowExclusions = false }) else if (page == Page.Home) null else if (selectingIcons) ({ cancelIconBatch() }) else back,
@@ -97,6 +104,7 @@ fun ModuleApp(
                 Icon(Icons.Default.Search, contentDescription = "搜索应用")
             }
             if (!searchOpen) {
+            if (page == Page.BackgroundApp && appPackage != null) BackgroundAppActions(appPackage)
             if (page == Page.Motion) MotionActions()
             if (page == Page.Shade) IconButton(onClick = {
                 ShadeStore.setIconScale(context, true, 100)
@@ -137,6 +145,8 @@ fun ModuleApp(
                 })
             Page.IconApp -> IconAppScreen(iconApp, bottomInset)
             Page.Blocked -> AppPickerScreen(controller, bottomInset = bottomInset)
+            Page.Background -> BackgroundList(controller.apps, controller.catalogLoaded, bottomInset, openBackgroundApp)
+            Page.BackgroundWakeLocks -> BackgroundWakeLockScreen(controller.apps, controller.catalogLoaded, bottomInset)
             else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 24.dp + bottomInset)) {
                 when (page) {
                     Page.Home -> HomeScreen(
@@ -146,7 +156,9 @@ fun ModuleApp(
                         onSuggestions = { navigate(Page.Suggestions) }, onMotion = { navigate(Page.Motion) },
                         onIcons = { navigate(Page.IconLayers) }, onGameMode = { navigate(Page.GameMode) },
                         onShade = { navigate(Page.Shade) }, onAlive = { navigate(Page.Alive) },
+                        onBackground = { navigate(Page.Background) },
                     )
+
                     Page.Harassment -> {
                         SettingsGroup {
                             SettingRow("来电拦截", onClick = { navigate(Page.Calls) }, leading = { Glyph("phone") })
@@ -158,6 +170,7 @@ fun ModuleApp(
                             SettingRow("短信记录", onClick = { navigate(Page.SmsRecords) })
                         }
                     }
+                    Page.BackgroundApp -> BackgroundAppScreen(appPackage)
                     Page.Window -> {
                         WindowScreen(controller.preferences, navigate, controller::toggleControl,
                             enablePrompt = controller.enablePrompt, enableChecking = controller.enableChecking,
@@ -185,7 +198,9 @@ fun ModuleApp(
                         dev.local.sunwindowdemo.features.diagnostics.DiagnosticsScreen(bottomInset)
                     }
                     Page.Licenses -> LicensesScreen()
-                    Page.Tools -> DeveloperTools(onWindow = { navigate(Page.Diagnostics) }, onIcons = { navigate(Page.IconDiagnostics) })
+                    Page.Tools -> DeveloperTools(onWindow = { navigate(Page.Diagnostics) },
+                        onIcons = { navigate(Page.IconDiagnostics) },
+                        onWakeLocks = { navigate(Page.BackgroundWakeLocks) })
                     Page.Diagnostics -> DiagnosticsScreen(controller)
                     Page.IconDiagnostics -> IconDiagnosticsScreen()
                     else -> Unit
@@ -249,7 +264,7 @@ private fun IconLayerActions(onBatch: () -> Unit) {
 }
 
 @Composable
-private fun DeveloperTools(onWindow: () -> Unit, onIcons: () -> Unit) {
+private fun DeveloperTools(onWindow: () -> Unit, onIcons: () -> Unit, onWakeLocks: () -> Unit) {
     val context = LocalContext.current
     var calls by remember { mutableStateOf(CallBlockingStore.readConfig(context)) }
     var motion by remember { mutableStateOf(MotionStore.read(context)) }
@@ -272,6 +287,7 @@ private fun DeveloperTools(onWindow: () -> Unit, onIcons: () -> Unit) {
     SettingsGroup {
         SettingRow("小窗诊断与恢复", onClick = onWindow)
         SettingRow("图标实验与诊断", onClick = onIcons)
+        SettingRow("后台唤醒锁限制", onClick = onWakeLocks)
         ToggleRow("显示游戏防误触范围", value = gameRegions) {
             dev.local.sunwindowdemo.features.gamemode.GameModeStore.showCornerRegions(context, it)
         }
@@ -296,7 +312,7 @@ private fun AodWallpaperToggle() {
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<AodWallpaperControl.State?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var message by remember { mutableStateOf("状态未知，点击下方按钮授权 root 并读取；进入页面不会自动申请权限") }
+    var message by remember { mutableStateOf("状态未知") }
     fun operate(target: Boolean? = null) {
         if (busy) return
         busy = true
@@ -307,9 +323,9 @@ private fun AodWallpaperToggle() {
                 }
                 message = if (target == null) {
                     if (state?.wallpaper == true && state?.capability == false)
-                        "壁纸设置已开，但系统能力未启用；可关闭清理，或重试开启以修复"
+                        "壁纸设置已开，系统能力未启用"
                     else "已读取系统实际状态"
-                } else "已${if (target) "开启" else "关闭"}并读回确认；若画面未更新，可手动重启 SystemUI。整机重启后需重新读取并开启"
+                } else "已${if (target) "开启" else "关闭"}并读回确认"
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -323,7 +339,7 @@ private fun AodWallpaperToggle() {
     GroupTitle("实验")
     SettingsGroup {
         ToggleRow("息屏显示壁纸（全景 AOD）",
-            "$message\n临时系统覆盖，整机重启后需重新开启；需要系统息屏显示已开启及支持的壁纸。操作期间请留在本页，退出或超时不会回滚已执行的命令。此项不修复 LTPO；Alive 照片防烧屏位移尚未实现，限短时测试。",
+            message,
             state?.wallpaper == true, enabled = state != null && !busy) { operate(it) }
         if (state?.wallpaper == true && state?.capability == false) {
             SettingRow("重试开启系统壁纸能力", onClick = if (busy) null else ({ operate(true) }))
@@ -338,13 +354,11 @@ private fun AodWallpaperToggle() {
 private fun DarkAodControls() {
     val context = LocalContext.current
     var config by remember { mutableStateOf(DarkAodStore.systemSnapshot(context)) }
-    ToggleRow("暗处暂停 AOD",
-        "LSPosed 实验，默认关闭。持续暗 10 秒暂停息屏显示，持续亮 2 秒恢复；不更改系统 AOD 开关，需系统息屏显示已开启。",
-        config.getBoolean("enabled")) {
+    ToggleRow("暗处暂停 AOD", value = config.getBoolean("enabled")) {
         DarkAodStore.setEnabled(context, it)
         config = DarkAodStore.systemSnapshot(context)
     }
-    SliderRow("暗处光照阈值", "默认 1 lux；亮处恢复阈值为 ${config.getFloat("bright_lux").toInt()} lux，可按传感器调整。",
+    SliderRow("暗处光照阈值", "亮处恢复阈值：${config.getFloat("bright_lux").toInt()} lux",
         value = config.getFloat("dark_lux").toInt(), range = 0..5, unit = " lux", steps = 4,
         onCommit = {
             DarkAodStore.setDarkLux(context, it.toFloat())

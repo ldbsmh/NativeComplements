@@ -6,13 +6,15 @@
 
 [IconAssets](<../../app/src/main/java/dev/local/sunwindowdemo/features/iconlayers/IconAssets.java>)在原 PackageManager 查询后解析计划，UI 预览与宿主 worker共用入口。手动双层、匹配库、已生成双层互斥；缺文件／层保原图，不静默换算法。mask跟随真实解析结果，不把平面图伪造成独立 themed 槽。
 
-“外观与控制”中的莫奈开关仅保留抽屉，受原生系统主题状态门控；图标适配页逐应用“莫奈图标”及“状态栏通知小图标”模式不受退役影响。窗口／遮罩莫奈已退役，[ShadeStore](<../../app/src/main/java/dev/local/sunwindowdemo/features/shade/ShadeStore.java>)恒关并忽略旧值，不能因共用素材方法或旧字段仍存在而宣传为当前功能。批量设置从图标页菜单选择应用，再独立选择各路模式，未选路保持原值，一次发布。
+“外观与控制”提供抽屉与遮罩莫奈独立开关，均受原生系统主题状态门控；遮罩覆盖系统启动图标与受管小窗转场图标，素材不足保留彩色／原图，缓存只在 worker 构建。图标适配页逐应用“莫奈图标”及“状态栏通知小图标”模式不受影响。小窗菜单／扇区莫奈仍退役，[ShadeStore](<../../app/src/main/java/dev/local/sunwindowdemo/features/shade/ShadeStore.java>)恒关并忽略旧值，不能因共用素材方法或旧字段仍存在而宣传为当前功能。批量设置从图标页菜单选择应用，再独立选择各路模式，未选路保持原值，一次发布。
 
 ## 宿主与 ABI
 
 [IconLayerModule](<../../app/src/main/java/dev/local/sunwindowdemo/features/iconlayers/IconLayerModule.java>)仅匹配已知 Launcher 主进程，保留 IconProvider／LauncherActivityInfo、FloatingIconView及模型缓存刷新链。同用户校验先于替换，原生 themed 动画不被彩色素材覆盖。[LauncherIconAccess](<../../app/src/main/java/dev/local/sunwindowdemo/features/iconlayers/LauncherIconAccess.java>)只解析 Kotlin 字段／getter、缓存移除参数次序等真实差异，不改变缓存或渲染策略。
 
 [DrawerMonet](<../../app/src/main/java/dev/local/sunwindowdemo/features/iconlayers/DrawerMonet.java>)限定 AllApps 网格／预测，区分 search／workspace。查询补 CacheLookupFlag 的 bit 8，缺 themed 位的已绑定 AppInfo在后台升级一次；仅绑定 ThreadLocal 范围请求原生主题绘制，finally 恢复。不全局开主题、不写共享 BitmapInfo；关闭重绑原生。系统主题由[LauncherThemeReporter](<../../app/src/main/java/dev/local/sunwindowdemo/features/iconlayers/LauncherThemeReporter.java>)观察 ThemeManager上报，不自动切换 Minimal 或修改用户桌面偏好。
+
+系统配色资源确认变化后，实际 HOME 在桌面主题图标开启时调用 Launcher 原生模型重绑，并刷新已绑定的抽屉图标。单色素材和持久化图标缓存继续沿用。管理界面也在配色资源更新或返回前台时重新读取系统配色。
 
 [SystemIconModule](<../../app/src/main/java/dev/local/sunwindowdemo/features/iconlayers/SystemIconModule.java>)只在 SystemUI处理同用户非会话通知标识图标及合格 splash。splash 临时属性必须 finally恢复；素材缺失保原生，不在 build／draw热路径查包、解码或 Binder。模型缓存更新在原 worker、可见 View刷新在 main；热恢复失败不保证无需重启桌面。
 
