@@ -9,4 +9,5 @@ enum class Page(val title: String) {
     SuggestionApps("链接与分享口令"),
     BackgroundWakeLocks("后台唤醒锁限制"),
     Background("墓碑"), BackgroundApp("进程设置"),
+    GameHandle("小白条位置"),
 }

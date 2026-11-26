@@ -54,19 +54,21 @@ public final class AliveSystemUi {
         try{
             Class<?> depth=type(loader,"com.android.systemui.statusbar.NotificationShadeDepthController");
             try{depth.getDeclaredMethod("setWakeAndUnlockBlurRadius",float.class);}
-            catch(NoSuchMethodException qpr2){
-                // QPR2 writes wakeAndUnlockBlurRadius directly and never applies it (blur moved to
-                // WindowRootViewBlurInteractor), so there is no native doze blur contribution to project.
-                log.accept("ALIVE_SYSTEMUI_DOZE_BLUR_SKIPPED no native wake blur setter");
+            catch(NoSuchMethodException lineage){
+                // LineageOS keeps wakeAndUnlockBlurRadius private and computes it through
+                // getNewWakeBlurRadius instead of a public setter.
+                installDozeBlurFallback(module,loader,depth,access,log,enabled);
                 return;
             }
-            Class<?> callback=type(loader,"com.android.systemui.statusbar.NotificationShadeDepthController$statusBarStateCallback$1");
-            Class<?> collector=type(loader,"com.android.systemui.statusbar.NotificationShadeDepthController$2$1");
+            Class<?> callback=nestedDoze(loader,depth,"onDozeAmountChanged",float.class,float.class);
+            Class<?> collector=nestedEmit(loader,depth);
             Class<?> interactor=type(loader,"com.android.systemui.wallpapers.domain.interactor.WallpaperInteractor");
             Field callbackOwner=field(callback,"this$0",depth),collectorOwner=field(collector,"this$0",depth);
-            Field collectorId=field(collector,"$r8$classId",int.class);
+            Field collectorId=optionalField(collector,"$r8$classId",int.class);
             Field wallpapers=field(depth,"wallpaperInteractor",interactor);
-            Field repository=field(interactor,"wallpaperRepository",access.constructor.getDeclaringClass());
+            // LineageOS 24.0 declares WallpaperInteractor.wallpaperRepository as the interface;
+            // PixelOS narrows it to the implementation.
+            Field repository=repositoryField(loader,interactor,"wallpaperRepository");
             Field ambient=field(depth,"wallpaperSupportsAmbientMode",boolean.class),amount=field(depth,"prevDozeAmount",float.class);
             Method doze=callback.getDeclaredMethod("onDozeAmountChanged",float.class,float.class);
             Method emit=collector.getDeclaredMethod("emit",Object.class,type(loader,"kotlin.coroutines.Continuation"));
@@ -93,7 +95,7 @@ public final class AliveSystemUi {
             }));
             hooks.add(module.hook(emit).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain->{
                 Object owner=null;
-                try{if(collectorId.getInt(chain.getThisObject())==1)owner=collectorOwner.get(chain.getThisObject());}
+                try{if(collectorId==null||collectorId.getInt(chain.getThisObject())==1)owner=collectorOwner.get(chain.getThisObject());}
                 catch(IllegalAccessException ignored){}
                 if(owner!=null)access.depth=new java.lang.ref.WeakReference<>(owner);
                 Object previous=producing.get();
@@ -112,6 +114,69 @@ public final class AliveSystemUi {
         }
     }
 
+    /** LOS private-field path: project only the doze contribution of the selected own ambient wallpaper. */
+    private static void installDozeBlurFallback(XposedModule module,ClassLoader loader,Class<?> depth,
+            Access access,Consumer<String> log,java.util.concurrent.atomic.AtomicBoolean enabled){
+        List<XposedInterface.HookHandle> hooks=new ArrayList<>();
+        try{
+            Class<?> interactor=type(loader,"com.android.systemui.wallpapers.domain.interactor.WallpaperInteractor");
+            Field wallpapers=field(depth,"wallpaperInteractor",interactor);
+            Field repository=repositoryField(loader,interactor,"wallpaperRepository");
+            Field ambient=field(depth,"wallpaperSupportsAmbientMode",boolean.class);
+            Field amount=field(depth,"prevDozeAmount",float.class);
+            Method radius=depth.getDeclaredMethod("getNewWakeBlurRadius",float.class);
+            radius.setAccessible(true);
+            if(radius.getReturnType()!=float.class)throw new NoSuchMethodException("doze blur fallback ABI");
+            hooks.add(module.hook(radius).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain->{
+                if(!enabled.get())return chain.proceed();
+                try{
+                    Object owner=chain.getThisObject();
+                    if(ambient.getBoolean(owner)&&amount.getFloat(owner)>0
+                            &&access.selectedOwn(repository.get(wallpapers.get(owner))))return 0f;
+                }catch(ReflectiveOperationException|RuntimeException unknown){/* Native contribution on unknown state. */}
+                return chain.proceed();
+            }));
+            // Deoptimize the private getter and its known callers; no global BlurUtils/resource change.
+            if(!module.deoptimize(radius))throw new IllegalStateException("doze blur fallback deoptimize");
+            try{module.deoptimize(depth.getDeclaredMethod("updateWakeBlurRadius",float.class));}catch(NoSuchMethodException ignored){}
+            try{module.deoptimize(nestedDoze(loader,depth,"onDozeAmountChanged",float.class,float.class).getDeclaredMethod("onDozeAmountChanged",float.class,float.class));}catch(ReflectiveOperationException ignored){}
+            try{module.deoptimize(nestedEmit(loader,depth).getDeclaredMethod("emit",Object.class,type(loader,"kotlin.coroutines.Continuation")));}catch(ReflectiveOperationException ignored){}
+            enabled.set(true);
+            log.accept("ALIVE_SYSTEMUI_DOZE_BLUR_READY private-field fallback");
+        }catch(Throwable unknown){
+            enabled.set(false);
+            for(XposedInterface.HookHandle hook:hooks)try{hook.unhook();}catch(Throwable ignored){}
+            log.accept("ALIVE_SYSTEMUI_DOZE_BLUR_UNAVAILABLE "+unknown.getClass().getSimpleName());
+        }
+    }
+
+    /** R8 numbering of Kotlin anonymous callbacks is not stable; discover by verified methods. */
+    private static Class<?> nestedDoze(ClassLoader loader,Class<?> owner,String name,Class<?>...args)throws ClassNotFoundException{
+        for(int index=1;index<=64;index++)try{
+            Class<?> candidate=type(loader,owner.getName()+"$"+index);
+            try{candidate.getDeclaredMethod(name,args);return candidate;}catch(NoSuchMethodException absent){}
+        }catch(ClassNotFoundException absent){}
+        throw new ClassNotFoundException(owner.getName()+"$*."+name);
+    }
+    /** The capability collector is a nested R8 lambda with an emit(Object,Continuation) body. */
+    private static Class<?> nestedEmit(ClassLoader loader,Class<?> owner)throws ClassNotFoundException{
+        Class<?> continuation=type(loader,"kotlin.coroutines.Continuation");
+        for(int index=1;index<=64;index++){
+            Class<?> candidate;
+            try{candidate=type(loader,owner.getName()+"$"+index);}
+            catch(ClassNotFoundException absent){continue;}
+            try{
+                Method emit=candidate.getDeclaredMethod("emit",Object.class,continuation);
+                if(emit.getReturnType()==Object.class)return candidate;
+            }catch(NoSuchMethodException absent){}
+            for(int child=1;child<=16;child++)try{
+                Class<?> nested=type(loader,candidate.getName()+"$"+child);
+                Method emit=nested.getDeclaredMethod("emit",Object.class,continuation);
+                if(emit.getReturnType()==Object.class)return nested;
+            }catch(ClassNotFoundException|NoSuchMethodException absent){}
+        }
+        throw new ClassNotFoundException(owner.getName()+"$*#emit");
+    }
     static record MatchToken(Object user,Object lock,Object home,int uid,int wallpaperId,int lockId) {
         boolean same(MatchToken other){return other!=null&&user==other.user&&lock==other.lock&&home==other.home&&uid==other.uid&&wallpaperId==other.wallpaperId&&lockId==other.lockId;}
     }
@@ -126,9 +191,14 @@ public final class AliveSystemUi {
         final Field ambient,lockInfo,homeInfo,settings,manager,background,selected,userInfo,userId,status;
         final Object complete;
         final Method combine,flowOn,current,getSetting,getInfo,getId,supports;
-        final boolean lockIsState,settingNameFirst;
+        final boolean lockIsState;
+        final int settingMode; // 0: (default,user,name), 1: (default,name,user), 2: (name,default,user)
         int setting(Object secure,int user,String name)throws ReflectiveOperationException {
-            return (Integer)(settingNameFirst?getSetting.invoke(secure,0,name,user):getSetting.invoke(secure,0,user,name));
+            return switch (settingMode) {
+                case 2 -> (Integer)getSetting.invoke(secure,name,0,user);
+                case 1 -> (Integer)getSetting.invoke(secure,0,name,user);
+                default -> (Integer)getSetting.invoke(secure,0,user,name);
+            };
         }
         private final Map<Object,Selection> selections=new WeakHashMap<>();
         private static final class Selection {
@@ -155,9 +225,26 @@ public final class AliveSystemUi {
             Class<?> scope=type(loader,"kotlinx.coroutines.CoroutineScope"),dispatcher=type(loader,"kotlinx.coroutines.CoroutineDispatcher");
             Class<?> users=type(loader,"com.android.systemui.user.data.repository.UserRepository");
             Class<?> secure=type(loader,"com.android.systemui.util.settings.SecureSettings");
-            constructor=repository.getDeclaredConstructor(scope,dispatcher,
-                type(loader,"com.android.systemui.broadcast.BroadcastDispatcher"),users,WallpaperManager.class,
-                android.content.Context.class,secure,type(loader,"com.android.systemui.common.ui.domain.interactor.ConfigurationInteractorImpl"));
+            Class<?> dispatcherType=type(loader,"com.android.systemui.broadcast.BroadcastDispatcher");
+            Class<?> configImpl=null;
+            try{configImpl=type(loader,"com.android.systemui.common.ui.domain.interactor.ConfigurationInteractorImpl");}
+            catch(ClassNotFoundException ignored){}
+            // LineageOS 24.0 declares the constructor argument as the ConfigurationInteractor
+            // interface; PixelOS narrows it to ConfigurationInteractorImpl. Both are source-verified.
+            Constructor<?> found=null;
+            if(configImpl!=null)try{
+                found=repository.getDeclaredConstructor(scope,dispatcher,dispatcherType,users,
+                    WallpaperManager.class,android.content.Context.class,secure,configImpl);
+            }catch(NoSuchMethodException narrower){}
+            if(found==null)try{
+                Class<?> config=type(loader,"com.android.systemui.common.ui.domain.interactor.ConfigurationInteractor");
+                found=repository.getDeclaredConstructor(scope,dispatcher,dispatcherType,users,
+                    WallpaperManager.class,android.content.Context.class,secure,config);
+            }catch(NoSuchMethodException interfaceShape){
+                if(configImpl==null)throw interfaceShape;
+                throw new NoSuchMethodException("WallpaperRepositoryImpl constructor");
+            }
+            constructor=found;
             constructor.setAccessible(true);
             ambient=field(repository,"wallpaperSupportsAmbientMode",flow);
             Class<?> state=type(loader,"kotlinx.coroutines.flow.StateFlow");
@@ -187,10 +274,13 @@ public final class AliveSystemUi {
             catch(ClassNotFoundException|NoSuchMethodException facade){context2=type(loader,"kotlinx.coroutines.flow.FlowKt__ContextKt").getDeclaredMethod("flowOn",flow,context);}
             flowOn=context2;
             Class<?> proxy=type(loader,"com.android.systemui.util.settings.UserSettingsProxy");
-            Method setting;boolean nameFirst;
-            try{setting=proxy.getMethod("getIntForUser",int.class,int.class,String.class);nameFirst=false;}
-            catch(NoSuchMethodException older){setting=proxy.getMethod("getIntForUser",int.class,String.class,int.class);nameFirst=true;}
-            getSetting=setting;settingNameFirst=nameFirst;
+            Method setting;int mode;
+            try{setting=proxy.getMethod("getIntForUser",int.class,int.class,String.class);mode=0;}
+            catch(NoSuchMethodException older){
+                try{setting=proxy.getMethod("getIntForUser",int.class,String.class,int.class);mode=1;}
+                catch(NoSuchMethodException lineage){setting=proxy.getMethod("getIntForUser",String.class,int.class,int.class);mode=2;}
+            }
+            getSetting=setting;settingMode=mode;
             getInfo=WallpaperManager.class.getDeclaredMethod("getWallpaperInfo",int.class,int.class);
             getId=WallpaperManager.class.getDeclaredMethod("getWallpaperIdForUser",int.class,int.class);
             supports=WallpaperInfo.class.getDeclaredMethod("supportsAmbientMode");
@@ -252,6 +342,16 @@ public final class AliveSystemUi {
             ambient.set(repository,projection);
         }
     }
+    static Field repositoryField(ClassLoader loader,Class<?> owner,String name)throws ReflectiveOperationException {
+        Class<?> implementation=type(loader,"com.android.systemui.wallpapers.data.repository.WallpaperRepositoryImpl");
+        Field field=owner.getDeclaredField(name);
+        // R8 may erase the interface entirely when the host field is already narrowed to Impl.
+        if(field.getType()!=implementation){
+            Class<?> contract=type(loader,"com.android.systemui.wallpapers.data.repository.WallpaperRepository");
+            if(field.getType()!=contract||!contract.isAssignableFrom(implementation))throw new NoSuchFieldException(name);
+        }
+        field.setAccessible(true);return field;
+    }
     private static boolean nativeExperiment(){
         try{
             Method get=Class.forName("android.os.SystemProperties").getMethod("get",String.class);
@@ -263,6 +363,13 @@ public final class AliveSystemUi {
         Field value=owner.getDeclaredField(name);value.setAccessible(true);
         if(value.getType()!=expected)throw new NoSuchFieldException(owner.getName()+"."+name);
         return value;
+    }
+    private static Field optionalField(Class<?> owner,String name,Class<?> expected)throws ReflectiveOperationException{
+        try{
+            Field value=owner.getDeclaredField(name);value.setAccessible(true);
+            if(value.getType()!=expected)throw new NoSuchFieldException(owner.getName()+"."+name);
+            return value;
+        }catch(NoSuchFieldException absent){return null;}
     }
     /** Declared as a concrete or interface Flow type that must implement the expected host interface. */
     private static Field assignable(Class<?> owner,String name,Class<?> expected)throws ReflectiveOperationException {

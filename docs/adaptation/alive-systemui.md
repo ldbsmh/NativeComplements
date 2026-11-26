@@ -1,6 +1,6 @@
 # Alive SystemUI 能力与有界视觉交接合同
 
-[AliveSystemUi](<../../app/src/full/java/dev/local/sunwindowdemo/features/alive/AliveSystemUi.java>)只对用户实际选中的精确 ambient Alive 锁屏组件增加局部能力。当前行为保持 code165/166 运行合同；ROM署名不参与授权。普通壁纸/普通 Alive 保原生。绑定签名检查例外独立见[绑定合同](<alive-module.md>)，数据与生命周期见[平台合同](<alive-platform.md>)、[渲染合同](<alive-renderer.md>)。
+[AliveSystemUi](<../../app/src/full/java/dev/local/sunwindowdemo/features/alive/AliveSystemUi.java>)只对用户实际选中的精确 ambient Alive 锁屏组件增加局部能力。宿主接入按实际 ABI 解析，ROM 署名不参与授权。普通壁纸/普通 Alive 保原生。绑定签名检查例外独立见[绑定合同](<alive-module.md>)，数据与生命周期见[平台合同](<alive-platform.md>)、[渲染合同](<alive-renderer.md>)。
 
 ## 宿主能力投影
 

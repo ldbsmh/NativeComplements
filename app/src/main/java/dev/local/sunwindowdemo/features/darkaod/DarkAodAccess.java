@@ -7,7 +7,7 @@ import java.util.Collection;
 /** The verified DozeMachine ABI only; an incomplete ABI leaves native doze untouched. */
 final class DarkAodAccess {
     final Class<?> service, triggers;
-    final Method create, destroy, transition, request, userId, alwaysOn, near;
+    final Method create, destroy, transition, request, userId, alwaysOn, near, proximityChanged, proximityEvent;
     final Field machine, state, parts, queue, tracker, config, host, suppressed, battery, powerSave;
     final Field sensors, proximity, registered, paused;
     final Object aod, pausing, pausedState;
@@ -29,14 +29,32 @@ final class DarkAodAccess {
         tracker = field(machineClass, "mUserTracker");
         config = field(machineClass, "mAmbientDisplayConfig");
         host = field(machineClass, "mDozeHost");
-        suppressed = field(host.getType(), "mAlwaysOnSuppressed");
-        battery = field(host.getType(), "mBatteryController");
+        // LineageOS 24.0 declares mDozeHost as the DozeHost interface; PixelOS narrows it to the
+        // implementation. Resolve the verified implementation class without assuming a field shape.
+        Class<?> dozeHost = Class.forName("com.android.systemui.statusbar.phone.DozeServiceHost", false, loader);
+        if (!host.getType().isAssignableFrom(dozeHost))
+            throw new NoSuchFieldException("DozeServiceHost is not the native mDozeHost");
+        suppressed = field(dozeHost, "mAlwaysOnSuppressed");
+        battery = field(dozeHost, "mBatteryController");
         powerSave = field(Class.forName("com.android.systemui.statusbar.policy.BatteryControllerImpl", false, loader), "mAodPowerSave");
         userId = method(Class.forName("com.android.systemui.settings.UserTrackerImpl", false, loader), "getUserId");
         alwaysOn = method(config.getType(), "alwaysOnEnabled", int.class);
         sensors = field(triggers, "mDozeSensors");
         proximity = field(sensors.getType(), "mProximitySensor");
         near = method(prox, "isNear");
+        Method alert = null, event = null;
+        try {
+            Method callback = method(prox, "alertListeners");
+            if (callback.getReturnType() == void.class) {
+                event = method(prox, "onSensorEvent",
+                        Class.forName("com.android.systemui.util.sensors.ThresholdSensorEvent", false, loader));
+                alert = callback;
+            }
+        } catch (ClassNotFoundException | NoSuchMethodException ignored) {
+            // Other builds can keep the original lux/transition-based behavior.
+        }
+        proximityChanged = alert;
+        proximityEvent = event;
         registered = field(prox, "mRegistered");
         paused = field(prox, "mPaused");
         if (near.getReturnType() != Boolean.class || transition.getReturnType() != void.class)

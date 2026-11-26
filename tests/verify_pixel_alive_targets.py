@@ -1,8 +1,8 @@
 """Exact Alive/DarkAod archived ABI and invocation checks, not ART/device acceptance.
 
 Python stdlib only; missing archives exit 2 (SKIP), missing targets exit 1.
-All reflective host targets in Alive (including optional visual/trace hooks) and
-DarkAodAccess are enumerated, not a sample. Default is dada; --host pixelui checks the
+Checks the enumerated archived Alive/DarkAod targets and invocation paths.
+It does not prove every optional/fallback branch resolves or installs at runtime. Default is dada; --host pixelui checks the
 QPR2 shapes the source resolves (see QPR2), --host all checks both.
 Launcher has no Alive/DarkAod hook (its supplied archive identity is checked).
 """
@@ -28,7 +28,14 @@ def checks(owner, methods=(), fields=(), inherited=False):
 
 WMS = "Lcom/android/server/wallpaper/WallpaperManagerService;"
 BIND = "(Landroid/app/wallpaper/WallpaperDescription;ZZLcom/android/server/wallpaper/WallpaperData;Landroid/os/IRemoteCallback;)Z"
-checks(WMS, [("bindWallpaperDescriptionLocked", BIND)])
+checks(WMS, [("bindWallpaperDescriptionLocked", BIND),
+             ("setWallpaperComponentChecked", "(Landroid/app/wallpaper/WallpaperDescription;Ljava/lang/String;II)V"),
+             ("setWallpaperDescriptionInternal", "(Landroid/app/wallpaper/WallpaperDescription;IIZZLandroid/os/IRemoteCallback;)Z"),
+             ("isFromForegroundApp", "(Ljava/lang/String;)Z")])
+checks(A+"os/UserManager;", [("hasUserRestriction", "(Ljava/lang/String;Landroid/os/UserHandle;)Z")])
+checks(A+"app/admin/DevicePolicyManager;", [("getDeviceOwnerUserId", "()I"),
+       ("getDeviceOwnerComponentOnAnyUser", "()Landroid/content/ComponentName;"),
+       ("getProfileOwnerAsUser", "(I)Landroid/content/ComponentName;")])
 checks("Lcom/android/server/wallpaper/WallpaperData;", fields=[("userId", "I")])
 checks(A+"app/wallpaper/WallpaperDescription;", [("getComponent", "()Landroid/content/ComponentName;")])
 checks(A+"app/WallpaperInfo;", [("getComponent", "()Landroid/content/ComponentName;"), ("supportsAmbientMode", "()Z")])
@@ -111,7 +118,9 @@ checks(S+"settings/UserTrackerImpl;", [("getUserId", "()I")], inherited=True)
 checks(A+"hardware/display/AmbientDisplayConfiguration;", [("alwaysOnEnabled", "(I)Z")], inherited=True)
 checks(S+"doze/DozeTriggers;", fields=[("mDozeSensors", S+"doze/DozeSensors;")], inherited=True)
 checks(S+"doze/DozeSensors;", fields=[("mProximitySensor", PROX)], inherited=True)
-checks(PROX, [("isNear", "()Ljava/lang/Boolean;")], [("mRegistered", "Z"), ("mPaused", "Z")], True)
+checks(PROX, [("isNear", "()Ljava/lang/Boolean;"), ("alertListeners", "()V"),
+              ("onSensorEvent", "("+S+"util/sensors/ThresholdSensorEvent;)V")],
+       [("mRegistered", "Z"), ("mPaused", "Z")], True)
 checks(STATE, fields=[(n, STATE) for n in ("DOZE_AOD", "DOZE_AOD_PAUSING", "DOZE_AOD_PAUSED")])
 
 # Class.forName/type-only host lookups also fail the contract when absent, even
@@ -122,7 +131,7 @@ SOURCES = tuple(ALIVE_SOURCE.glob("*.java")) + (DARK_SOURCE/"DarkAodAccess.java"
 REQUIRED_CLASSES = {
     "L"+name.replace(".", "/")+";"
     for source in SOURCES
-    for name in re.findall(r'(?:type\(loader,|Class\.forName\()"([\w.$]+)"', source.read_text(encoding="utf-8"))
+    for name in re.findall(r'(?:type\(loader,|Class\.forName\()"([\w.$]+)"(?=\s*[,\)])', source.read_text(encoding="utf-8"))
 }
 
 HOSTS = {
@@ -163,7 +172,8 @@ QPR2 = {
     (K+"flow/FlowKt;", "combine"): (K+"flow/FlowKt__ZipKt;", "methods", "combine", "("+FLOW*4+"Lkotlin/jvm/functions/Function5;)"+COMBINED),
     (K+"flow/FlowKt;", "flowOn"): (K+"flow/FlowKt__ContextKt;", "methods", "flowOn", "("+FLOW+"Lkotlin/coroutines/CoroutineContext;)"+FLOW),
     (S+"util/settings/UserSettingsProxy;", "getIntForUser"): (S+"util/settings/UserSettingsProxy;", "methods", "getIntForUser", "(ILjava/lang/String;I)I"),
-    # No setter: the field is written only, so Alive skips the doze-blur projection.
+    # Archive has a field write, not this setter. This verifies that shape only;
+    # the source's getter fallback/deopt installation is a separate contract.
     (DEPTH, "setWakeAndUnlockBlurRadius"): (DEPTH, "fields", "wakeAndUnlockBlurRadius", "F"),
     (COLLECTOR, "$r8$classId"): (COLLECTOR, "fields", "$r8$classId", "B"),
     (S+"keyguard/domain/interactor/KeyguardTransitionInteractor$1$1;", "$r8$classId"): (S+"keyguard/domain/interactor/KeyguardTransitionInteractor$1$1;", "fields", "$r8$classId", "B"),
@@ -176,11 +186,18 @@ QPR2_CLASSES = {K+"flow/FlowKt;": {K+"flow/FlowKt__ZipKt;", K+"flow/FlowKt__Cont
 
 
 def required_classes(qpr2):
+    # Both archived Pixel builds retain the implementation, not these LOS-only
+    # interfaces. Source resolves them only after the exact impl shape fails.
+    pixel_shapes = {
+        S+"common/ui/domain/interactor/ConfigurationInteractor;": S+"common/ui/domain/interactor/ConfigurationInteractorImpl;",
+        S+"wallpapers/data/repository/WallpaperRepository;": REPO,
+    }
+    required = {pixel_shapes.get(owner, owner) for owner in REQUIRED_CLASSES}
     fallbacks = set().union(*QPR2_CLASSES.values())
     if not qpr2:
-        return set(REQUIRED_CLASSES) - fallbacks
+        return required - fallbacks
     result = set()
-    for owner in REQUIRED_CLASSES - fallbacks:
+    for owner in required - fallbacks:
         result |= QPR2_CLASSES.get(owner, {owner})
     return result
 
@@ -333,7 +350,7 @@ def main():
         print("CALLS", label, call_count-len(call_failures), "/", call_count, "exact DEX invocation/field paths")
         print("CLASSES", label, len(required)-len(missing_classes), "/", len(required), "literal reflection class targets")
         if not failures and not call_failures and not missing_classes:
-            print("PASS", label, "complete enumerated Alive/DarkAod reflection contract")
+            print("PASS", label, "enumerated Alive/DarkAod archive targets and invocation paths")
     print("LIMIT: archived ABI only; no ART install, sensor/display/visual/power/recovery acceptance")
     return int(failed)
 

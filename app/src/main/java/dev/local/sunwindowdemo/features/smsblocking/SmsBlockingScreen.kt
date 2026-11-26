@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.os.Bundle
 import android.provider.Settings
 import android.telephony.SubscriptionManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -54,11 +56,13 @@ fun SmsBlockingScreen(showRecords: Boolean = false, bottomInset: Dp = 0.dp, onRe
     var contactsPermission by remember { mutableStateOf(context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) }
     var ruleEdit by remember { mutableStateOf<RuleEdit?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
+    var selectedRecord by remember { mutableStateOf<Bundle?>(null) }
     var confirmAll by remember { mutableStateOf<Int?>(null) }
     var permissionDenied by remember { mutableStateOf(false) }
     fun refresh() {
         config = SmsBlockingStore.readConfig(context)
         records = SmsBlockingStore.readRecords(context).toList()
+        selectedRecord = null
         sims = activeSims(context)
         contactsPermission = context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
         permission = context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
@@ -85,7 +89,10 @@ fun SmsBlockingScreen(showRecords: Boolean = false, bottomInset: Dp = 0.dp, onRe
     DisposableEffect(lifecycle, context, permission) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             config = SmsBlockingStore.readConfig(context)
-            if (key == null || key == "records") records = SmsBlockingStore.readRecords(context).toList()
+            if (key == null || key == "records") {
+                selectedRecord = null
+                records = SmsBlockingStore.readRecords(context).toList()
+            }
         }
         val prefs = SmsBlockingStore.preferences(context)
         prefs.registerOnSharedPreferenceChangeListener(listener)
@@ -106,21 +113,11 @@ fun SmsBlockingScreen(showRecords: Boolean = false, bottomInset: Dp = 0.dp, onRe
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 24.dp + bottomInset)) {
         if (showRecords) {
-            Hint("仅记录已同步确认关联短信被系统永久删除且影响行数大于零的拦截。异步过滤可能不记；没有记录不代表短信未被拦截。")
             if (records.isEmpty()) Hint("暂无拦截记录") else {
                 TextButton(onClick = { confirmClear = true }) { Text("清空记录") }
                 SettingsGroup {
                     records.forEach { item ->
-                        val sim = item.getString("sim_label").orEmpty().ifBlank { "SIM ${item.getInt("slot_index") + 1}" }
-                        val reason = when (item.getString("reason")) {
-                            "all_sms" -> "拦截该卡全部短信"
-                            "stranger" -> "陌生发送方（不在系统通讯录）"
-                            "pattern" -> "匹配规则 ${item.getString("matched_pattern").orEmpty()}"
-                            "keyword" -> "命中关键词 ${item.getString("matched_pattern").orEmpty()}"
-                            else -> item.getString("reason").orEmpty()
-                        }
-                        SettingRow(item.getString("sender").orEmpty().ifBlank { "未知发送方" },
-                            "$sim · $reason\n${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM).format(Date(item.getLong("time")))}")
+                        SettingRow(recordSender(item), recordSummary(item), onClick = { selectedRecord = item })
                     }
                 }
             }
@@ -128,7 +125,6 @@ fun SmsBlockingScreen(showRecords: Boolean = false, bottomInset: Dp = 0.dp, onRe
             SettingsGroup {
                 ToggleRow("启用短信拦截", value = config.getBoolean("enabled")) { SmsBlockingStore.setEnabled(context, it) }
             }
-            Hint("拦截在系统电话进程中判定，交由系统原生屏蔽流程执行。规则更新需等待电话进程读取；锁定状态与运营商过滤等仍由系统处理。")
             if (!permission) SettingsGroup {
                 SettingRow("识别 SIM 卡", onClick = {
                     requestPermission.launch(Manifest.permission.READ_PHONE_STATE)
@@ -231,7 +227,7 @@ fun SmsBlockingScreen(showRecords: Boolean = false, bottomInset: Dp = 0.dp, onRe
     }
     confirmAll?.let { slot ->
         AlertDialog(onDismissRequest = { confirmAll = null }, title = { Text("拦截 SIM ${slot + 1} 的全部短信？") },
-            text = { Text("该卡的短信将提交系统原生屏蔽流程，包括验证码、银行与运营商通知。记录只包含已同步确认原生永久删除影响行数的短信；异步过滤可能不记。") },
+            text = { Text("该卡所有短信将被拦截，包括验证码、银行和运营商通知。") },
             confirmButton = {
                 TextButton(onClick = {
                     SmsBlockingStore.setRejectAll(context, slot, true)
@@ -241,8 +237,43 @@ fun SmsBlockingScreen(showRecords: Boolean = false, bottomInset: Dp = 0.dp, onRe
             dismissButton = { TextButton(onClick = { confirmAll = null }) { Text("取消") } })
     }
     if (confirmClear) AlertDialog(onDismissRequest = { confirmClear = false }, title = { Text("清空拦截记录？") },
-        confirmButton = { TextButton(onClick = { SmsBlockingStore.clearRecords(context); confirmClear = false }) { Text("清空") } },
+        confirmButton = { TextButton(onClick = {
+            selectedRecord = null
+            SmsBlockingStore.clearRecords(context)
+            confirmClear = false
+        }) { Text("清空") } },
         dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("取消") } })
+    selectedRecord?.let { item ->
+        AlertDialog(onDismissRequest = { selectedRecord = null }, title = { Text("短信详情") },
+            text = {
+                Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(recordSender(item), style = MaterialTheme.typography.titleMedium)
+                    Text(recordSummary(item), style = MaterialTheme.typography.bodySmall)
+                    SelectionContainer {
+                        Text(item.getString("body").orEmpty().ifEmpty { "未记录到正文" })
+                    }
+                    if (item.getBoolean("body_truncated")) Text("正文超过700字符，仅显示前700字符",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = { TextButton(onClick = { selectedRecord = null }) { Text("关闭") } })
+    }
+}
+
+private fun recordSender(item: Bundle) = item.getString("sender").orEmpty().ifBlank { "未知发送方" }
+
+private fun recordSummary(item: Bundle): String {
+    val sim = item.getString("sim_label").orEmpty().ifBlank { "SIM ${item.getInt("slot_index") + 1}" }
+    val reason = when (item.getString("reason")) {
+        "all_sms" -> "拦截该卡全部短信"
+        "stranger" -> "陌生发送方（不在系统通讯录）"
+        "pattern" -> "匹配规则 ${item.getString("matched_pattern").orEmpty()}"
+        "keyword" -> "命中关键词 ${item.getString("matched_pattern").orEmpty()}"
+        else -> item.getString("reason").orEmpty()
+    }
+    val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM).format(Date(item.getLong("time")))
+    return "$sim · $reason\n$time"
 }
 
 @Composable

@@ -38,6 +38,7 @@ import dev.local.sunwindowdemo.features.background.BackgroundList
 import dev.local.sunwindowdemo.features.gamemode.GameModeScreen
 import dev.local.sunwindowdemo.features.gamemode.GameQuickScreen
 import dev.local.sunwindowdemo.features.gamemode.GameCornerScreen
+import dev.local.sunwindowdemo.features.gamemode.GameHandlePositionScreen
 import dev.local.sunwindowdemo.features.iconlayers.IconDiagnosticsScreen
 import dev.local.sunwindowdemo.features.iconlayers.IconLayerScreen
 import dev.local.sunwindowdemo.features.iconlayers.IconBatchDialog
@@ -131,7 +132,9 @@ fun ModuleApp(
             Page.Shade -> ShadeScreen(bottomInset)
             Page.Motion -> MotionScreen(controller.apps, controller.catalogLoaded, bottomInset)
             Page.GameMode -> GameModeScreen(controller.apps, controller.catalogLoaded, bottomInset,
-                onQuick = { navigate(Page.GameQuick) }, onBarrage = { navigate(Page.Barrage) }, onCorner = { navigate(Page.GameCorner) })
+                onQuick = { navigate(Page.GameQuick) }, onBarrage = { navigate(Page.Barrage) }, onCorner = { navigate(Page.GameCorner) },
+                onHandle = { navigate(Page.GameHandle) })
+            Page.GameHandle -> GameHandlePositionScreen(bottomInset)
             Page.GameCorner -> GameCornerScreen(bottomInset)
             Page.GameQuick -> GameQuickScreen(controller.apps, controller.catalogLoaded, bottomInset, onAppTabChanged = {
                 appsTab = it
@@ -365,5 +368,4 @@ private fun DarkAodControls() {
             config = DarkAodStore.systemSnapshot(context)
         })
 }
-
 

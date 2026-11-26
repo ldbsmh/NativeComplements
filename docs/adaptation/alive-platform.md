@@ -1,6 +1,6 @@
 # Alive 平台、配置与 Direct Boot 合同
 
-Alive 仅在 full 主模块，使用原生 WallpaperService，不接管认证、输入或显示器电源。当前维护行为以 code165/166 的运行源码为准；社区接入不改变 Alive 运行路径，不按 ROM 名称授予能力。资源、绑定例外、系统交接与渲染分别见[资源合同](<alive-assets.md>)、[绑定合同](<alive-module.md>)、[SystemUI 合同](<alive-systemui.md>)、[渲染合同](<alive-renderer.md>)。
+Alive 完整保留于 full 主模块，后续拆分独立项目；当前不新增产品 flavor 或模块入口。使用原生 WallpaperService，不接管认证、输入或显示器电源；实际宿主接入由精确 ABI 决定，不按 ROM 名称授予能力。资源、绑定例外、系统交接与渲染分别见[资源合同](<alive-assets.md>)、[绑定合同](<alive-module.md>)、[SystemUI 合同](<alive-systemui.md>)、[渲染合同](<alive-renderer.md>)。
 
 ## 组件、编辑与应用
 
@@ -10,7 +10,7 @@ Alive 仅在 full 主模块，使用原生 WallpaperService，不接管认证、
 
 [系统状态](<../../app/src/full/java/dev/local/sunwindowdemo/features/alive/AliveSystemState.java>)只读本用户 `doze_always_on`，通过 ContentObserver/页面恢复刷新。1 显示三卡，0 显示两卡，其他/拒绝/缺键为未知，不能当关闭；隐藏卡不丢已存样式。设置已知时应用 ambient 组件，关闭后重新开启 AOD 无须重选；未知优先保已有 ambient 选择，否则普通组件回退。
 
-同一目标组件已选且无普通/ambient 混用时可直接发布；首次或切换须经原生选择器成功并核实组件才发布。取消/失败保草稿及旧应用配置；成功发 HOME，再只移除本模块任务。返回桌面失败不应将已应用误报未提交。
+同一目标组件已选且无普通/ambient 混用时可直接发布；首次或切换优先经原生选择器。LineageOS 的 WallpaperPicker2/ThemePicker 没有导出 `ACTION_CHANGE_LIVE_WALLPAPER` 预览 Activity，此时由模块自己的 system_server 广播桥只绑定精确 Alive 组件；桥不可用则退回系统 `ACTION_SET_WALLPAPER`。桥接保发送者 AppOps、显式用户政策及设备／资料所有者例外，不借 system_server 身份越过限制；所有路径都确认 SYSTEM／LOCK 两目标的实际组件后才发布草稿。取消/失败保草稿及旧应用配置；成功发 HOME，再只移除本模块任务。返回桌面失败不应将已应用误报未提交。
 
 ## 数据与隐私
 

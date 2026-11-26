@@ -2,7 +2,7 @@
 # Keep every module class/member, including synthetic callbacks and reflection targets.
 # No allowoptimization/allowobfuscation: do not inline or merge module Hook code.
 -keep class dev.local.sunwindowdemo.** { *; }
-# Imported, pinned OpenAlive native JNI symbols and ObjectAnimator FloatProperty targets.
+# Pinned OpenAlive JNI symbols and ObjectAnimator property targets.
 -keep class org.aliveclean.** { *; }
 # These libraries also exist in the host. Class.forName(name, false, hostLoader)
 # must keep the host ABI, not adapt names to the module's obfuscated dependencies.
