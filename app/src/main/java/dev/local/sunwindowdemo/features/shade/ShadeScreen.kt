@@ -17,29 +17,35 @@ import dev.local.sunwindowdemo.features.iconlayers.IconLayerStore
 import dev.local.sunwindowdemo.features.navbar.NavbarStore
 
 @Composable
-fun ShadeScreen(bottomInset: Dp = 0.dp) {
+fun ShadeScreen(bottomInset: Dp = 0.dp, desktopExtras: @Composable () -> Unit = {}, displayExtras: @Composable () -> Unit = {}) {
     val context = LocalContext.current
     var enabled by remember { mutableStateOf(ShadeStore.read(context).getBoolean("enabled")) }
+    var appVolume by remember { mutableStateOf(ShadeStore.read(context).getBoolean("appVolume")) }
     var drawerMonet by remember { mutableStateOf(ShadeStore.drawerMonet(context)) }
     var coverMonet by remember { mutableStateOf(ShadeStore.coverMonet(context)) }
+    var lockscreenDoubleTapSleep by remember { mutableStateOf(ShadeStore.lockscreenDoubleTapSleep(context)) }
     var desktopDoubleTapSleep by remember { mutableStateOf(ShadeStore.desktopDoubleTapSleep(context)) }
     var systemThemed by remember { mutableStateOf(IconLayerStore.systemThemed(context)) }
     var offset by remember { mutableIntStateOf(ShadeStore.offset(context)) }
     var notificationIconScale by remember { mutableIntStateOf(ShadeStore.iconScale(context, true)) }
     var systemIconScale by remember { mutableIntStateOf(ShadeStore.iconScale(context, false)) }
     var signalDisplay by remember { mutableStateOf(ShadeStore.read(context).getBoolean("signalDisplay")) }
+    var floatingCallRefresh by remember { mutableStateOf(ShadeStore.floatingCallRefresh(context)) }
     var navbarImmersive by remember { mutableStateOf(NavbarStore.preferences(context).getBoolean("enabled", false)) }
     DisposableEffect(context) {
         val prefs = ShadeStore.preferences(context)
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
             enabled = ShadeStore.read(context).getBoolean("enabled")
+            appVolume = ShadeStore.read(context).getBoolean("appVolume")
             drawerMonet = ShadeStore.drawerMonet(context)
             coverMonet = ShadeStore.coverMonet(context)
             desktopDoubleTapSleep = ShadeStore.desktopDoubleTapSleep(context)
+            lockscreenDoubleTapSleep = ShadeStore.lockscreenDoubleTapSleep(context)
             offset = ShadeStore.offset(context)
             notificationIconScale = ShadeStore.iconScale(context, true)
             systemIconScale = ShadeStore.iconScale(context, false)
             signalDisplay = ShadeStore.read(context).getBoolean("signalDisplay")
+            floatingCallRefresh = ShadeStore.floatingCallRefresh(context)
         }
         val icons = IconLayerStore.prefs(context)
         val themeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
@@ -65,6 +71,7 @@ fun ShadeScreen(bottomInset: Dp = 0.dp) {
             ToggleRow("双击桌面锁屏", value = desktopDoubleTapSleep) {
                 ShadeStore.setDesktopDoubleTapSleep(context, it)
             }
+            desktopExtras()
             val hint = when {
                 systemThemed -> null
                 dev.local.sunwindowdemo.core.LauncherTargets.home(context) == "com.android.launcher3" ->
@@ -76,6 +83,12 @@ fun ShadeScreen(bottomInset: Dp = 0.dp) {
             ToggleRow("遮罩莫奈图标", value = coverMonet && systemThemed, enabled = systemThemed) { ShadeStore.setCoverMonet(context, it) }
             ToggleRow("小白条沉浸", value = navbarImmersive) {
                 NavbarStore.setEnabled(context, it)
+            }
+        }
+        GroupTitle("锁屏")
+        SettingsGroup {
+            ToggleRow("双击锁屏空白处息屏", value = lockscreenDoubleTapSleep) {
+                ShadeStore.setLockscreenDoubleTapSleep(context, it)
             }
         }
         GroupTitle("状态栏与控制中心")
@@ -94,6 +107,23 @@ fun ShadeScreen(bottomInset: Dp = 0.dp) {
             }
             SliderRow("图标垂直位置", value = offset, range = -32..32, unit = " dp") {
                 ShadeStore.setOffset(context, it)
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT == 37 &&
+            android.os.Process.myUserHandle() == android.os.UserHandle.getUserHandleForUid(android.os.Process.SYSTEM_UID)) {
+            GroupTitle("显示")
+            SettingsGroup {
+                ToggleRow("视频悬浮窗保持高刷", "QQ、微信的视频悬浮窗不会将前台应用限制在 60 Hz",
+                    value = floatingCallRefresh) { ShadeStore.setFloatingCallRefresh(context, it) }
+                displayExtras()
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT == 37 && android.os.Build.DEVICE == "dada") {
+            GroupTitle("音量")
+            SettingsGroup {
+                ToggleRow("独立应用音量", "为当前播放媒体的应用显示单独的音量滑杆", value = appVolume) {
+                    ShadeStore.setAppVolume(context, it)
+                }
             }
         }
     }
