@@ -15,24 +15,30 @@ final class WindowAudioGain {
 
     static final class Player {
         final int uid;
-        private float base=1f;
+        private float base=1f,gain=1f;
         private boolean muted,released;
         Player(int uid){this.uid=uid;}
         synchronized Object external(float volume,VolumeCall call)throws Throwable{
-            Object result=call.run(muted?0f:volume);
+            Object result=call.run(muted?0f:volume*gain);
             base=volume; // Only commit after the original call succeeds, including when composed to zero.
             return result;
         }
         synchronized void mute(boolean value,VolumeCall call)throws Throwable{
             if(released)return;
             if(value==muted)return;
-            call.run(value?0f:base);
+            call.run(value?0f:base*gain);
             muted=value;
+        }
+        synchronized void gain(float value,VolumeCall call)throws Throwable{
+            if(released||value==gain)return;
+            call.run(muted?0f:base*value);
+            gain=value;
         }
         synchronized void release(){released=true;}
     }
 
     volatile Runnable onBorn;
+    volatile Runnable onAppBorn;
     private static volatile WindowAudioGain installed;
     private final Map<Integer,Player> players=new ConcurrentHashMap<>();
     private final ThreadLocal<Boolean> ownCall=ThreadLocal.withInitial(()->false);
@@ -65,20 +71,30 @@ final class WindowAudioGain {
         return player!=null&&player.uid==(Integer)uid.invoke(config)?player:null;
     }
     boolean known(AudioPlaybackConfiguration config)throws Exception{return player(config)!=null;}
+    void appGain(AudioPlaybackConfiguration config,float value)throws Throwable{
+        if(!Float.isFinite(value)||value<0f||value>1f)throw new IllegalArgumentException("AAudio app gain");
+        Player player=player(config);
+        if(player==null)throw new IllegalStateException("AAudio gain baseline not observed");
+        Object target=proxy.invoke(config);
+        if(target==null)throw new IllegalStateException("AAudio player released");
+        player.gain(value,volume->write(target,volume));
+    }
+    private Object write(Object target,float volume)throws Exception{
+        boolean previous=ownCall.get();ownCall.set(true);
+        try{return setVolume.invoke(target,volume);}
+        finally{if(previous)ownCall.set(true);else ownCall.remove();}
+    }
     void mute(AudioPlaybackConfiguration config,boolean value)throws Throwable{
         Player player=player(config);
         if(player==null)throw new IllegalStateException("AAudio gain baseline not observed");
         Object target=proxy.invoke(config);
         if(target==null)throw new IllegalStateException("AAudio player released");
-        player.mute(value,volume->{
-            boolean previous=ownCall.get();ownCall.set(true);
-            try{return setVolume.invoke(target,volume);}
-            finally{if(previous)ownCall.set(true);else ownCall.remove();}
-        });
+        player.mute(value,volume->write(target,volume));
     }
 
     /** Called synchronously at backend selection, before AudioService/player registration starts. */
     static List<XposedInterface.HookHandle> install(XposedInterface module,ClassLoader loader,Consumer<String> log){
+        if(installed!=null)return List.of();
         List<XposedInterface.HookHandle> handles=new ArrayList<>();
         try{
             WindowAudioGain gain=new WindowAudioGain();
@@ -107,6 +123,7 @@ final class WindowAudioGain {
                     if(gain.isAAudio(config)){
                         gain.players.put((Integer)gain.id.invoke(config),new Player((Integer)gain.uid.invoke(config)));
                         Runnable notify=gain.onBorn;if(notify!=null)notify.run();
+                        Runnable appNotify=gain.onAppBorn;if(appNotify!=null)appNotify.run();
                     }
                 }catch(Exception e){log.accept("WINDOW_AUDIO_GAIN_BIRTH_FAILED "+FrameworkAccess.reason(e));}
                 return result;

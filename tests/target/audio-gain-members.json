@@ -122,9 +122,20 @@
           "name": "trackPlayer",
           "descriptor": "(Landroid/media/PlayerBase$PlayerIdCard;)I",
           "access": 1
+        },
+        {
+          "name": "systemReady",
+          "descriptor": "()V",
+          "access": 1
         }
       ],
-      "fields": []
+      "fields": [
+        {
+          "name": "mContext",
+          "type": "Landroid/content/Context;",
+          "access": 17
+        }
+      ]
     },
     "Lcom/android/server/audio/PlaybackActivityMonitor;": {
       "superclass": "Ljava/lang/Object;",
@@ -172,6 +183,28 @@
           "access": 17
         }
       ]
+    },
+    "Landroid/media/AudioAttributes;": {
+      "superclass": "Ljava/lang/Object;",
+      "methods": [
+        {
+          "name": "getVolumeControlStream",
+          "descriptor": "()I",
+          "access": 1
+        }
+      ],
+      "fields": []
+    },
+    "Lcom/android/server/audio/AudioService$Lifecycle;": {
+      "superclass": "Lcom/android/server/SystemService;",
+      "methods": [
+        {
+          "name": "onBootPhase",
+          "descriptor": "(I)V",
+          "access": 1
+        }
+      ],
+      "fields": []
     }
   }
 }

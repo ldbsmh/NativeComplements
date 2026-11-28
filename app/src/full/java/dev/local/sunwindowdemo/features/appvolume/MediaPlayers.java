@@ -4,11 +4,11 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.drawable.Drawable;
-import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.AudioPlaybackConfiguration;
 import android.media.VolumeShaper;
 import android.os.Handler;
+import android.os.Binder;
 import android.util.Log;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -18,12 +18,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import dev.local.sunwindowdemo.AppVolumeHost;
 
 /** Local media player state and attenuation, owned by the SystemUI main thread. */
 final class MediaPlayers {
     private static final String TAG = "PixelOSMediaVolume";
     private static final int SHAPER_ID = 0x504f5356;
     private final PackageManager packages;
+    private final Context context;
+    private final Handler handler;
+    private final Binder owner = new Binder();
     private final SharedPreferences preferences;
     private final Method clientUid, playerId, playerState, playerType, playerProxy, applyShaper, setShaperId;
     private final int aaudio;
@@ -31,6 +35,7 @@ final class MediaPlayers {
     private final int started;
     private final VolumeShaper.Operation replace;
     private final Map<Integer, Integer> applied = new HashMap<>();
+    private final Map<Integer, Integer> pending = new HashMap<>();
     private final Set<Integer> failed = new HashSet<>();
     private final Set<Runnable> observers = new HashSet<>();
     private final Map<String, App> knownApps = new HashMap<>();
@@ -38,10 +43,14 @@ final class MediaPlayers {
     private List<App> apps = List.of();
     private boolean enabled;
     private boolean showPercentage = true;
+    private boolean aaudioReady;
+    private List<AudioPlaybackConfiguration> snapshot = List.of();
 
     MediaPlayers(Context context, Handler handler, boolean enabled) throws ReflectiveOperationException {
         AudioManager audio = context.getSystemService(AudioManager.class);
         if (audio == null) throw new IllegalStateException("AudioManager unavailable");
+        this.context = context;
+        this.handler = handler;
         packages = context.getPackageManager();
         this.enabled = enabled;
         preferences = context.getSharedPreferences("nativecomplements_app_volume", Context.MODE_PRIVATE);
@@ -70,6 +79,10 @@ final class MediaPlayers {
                 update(configurations);
             }
         }, handler);
+        AppVolumeHost.send(context, handler, owner, -1, null, 100, true, ready -> {
+            aaudioReady = ready;
+            if (ready) update(snapshot);
+        });
     }
 
     boolean showPercentage() { return showPercentage; }
@@ -101,7 +114,12 @@ final class MediaPlayers {
     void setEnabled(boolean enabled) {
         if (this.enabled == enabled) return;
         this.enabled = enabled;
+        if (!enabled) {
+            pending.clear();
+            AppVolumeHost.send(context, handler, owner, -1, null, 100, true, ignored -> {});
+        }
         for (Player player : players) {
+            if (!enabled && player.aaudio()) { applied.remove(player.id()); continue; }
             if (applied.containsKey(player.id()) || preferences.contains(player.app().key())) {
                 apply(player, enabled ? gain(player.app()) : 100);
             }
@@ -110,14 +128,15 @@ final class MediaPlayers {
     }
 
     private void update(List<AudioPlaybackConfiguration> snapshot) {
+        this.snapshot = List.copyOf(snapshot);
         List<Player> next = new ArrayList<>();
         Set<Integer> ids = new HashSet<>();
         Map<String, App> visible = new LinkedHashMap<>();
         for (AudioPlaybackConfiguration config : snapshot) {
-            int usage = config.getAudioAttributes().getUsage();
-            if (usage != AudioAttributes.USAGE_MEDIA && usage != AudioAttributes.USAGE_GAME) continue;
+            if (!AppVolumeHost.media(config.getAudioAttributes())) continue;
             try {
-                if ((Integer) playerType.invoke(config) == aaudio) continue;
+                boolean nativeAudio = (Integer) playerType.invoke(config) == aaudio;
+                if (nativeAudio && !aaudioReady) continue;
                 int uid = (Integer) clientUid.invoke(config);
                 if (uid < 10_000 || uid == android.os.Process.myUid()
                         || uid / 100_000 != android.os.Process.myUid() / 100_000) continue;
@@ -130,7 +149,7 @@ final class MediaPlayers {
                 String key = uid + ":" + names[0];
                 App app = knownApps.computeIfAbsent(key, unused -> loadApp(key, names[0]));
                 ids.add(id);
-                next.add(new Player(id, app, proxy));
+                next.add(new Player(id, uid, names[0], app, proxy, nativeAudio));
                 if (state == started || state == paused) visible.putIfAbsent(key, app);
             } catch (ReflectiveOperationException | RuntimeException ignored) {
                 // Released players and ambiguous shared UIDs are omitted.
@@ -168,6 +187,22 @@ final class MediaPlayers {
 
     private void apply(Player player, int gain) {
         Integer old = applied.get(player.id());
+        if (player.aaudio()) {
+            Integer queued = pending.get(player.uid());
+            if (queued != null && queued == gain) return;
+            if (queued == null && old != null && old == gain) return;
+            pending.put(player.uid(), gain);
+            AppVolumeHost.send(context, handler, owner, player.uid(), player.packageName(), gain, false, success -> {
+                if (!Integer.valueOf(gain).equals(pending.get(player.uid()))) return;
+                pending.remove(player.uid());
+                if (success) {
+                    for (Player current : players) {
+                        if (current.aaudio() && current.uid() == player.uid()) applied.put(current.id(), gain);
+                    }
+                } else if (failed.add(player.id())) Log.w(TAG, "Could not adjust AAudio player");
+            });
+            return;
+        }
         if (old != null && old == gain) return;
         try {
             float level = gain / 100f;
@@ -183,5 +218,5 @@ final class MediaPlayers {
     }
 
     record App(String key, String name, Drawable icon) {}
-    private record Player(int id, App app, Object proxy) {}
+    private record Player(int id, int uid, String packageName, App app, Object proxy, boolean aaudio) {}
 }

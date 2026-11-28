@@ -56,6 +56,10 @@ Preview20: mini menu vector icons, circle/menu shapes, colors, 42dp buttons and 
 
 0.9.12: the status-bar vertical offset and the suggestion-row rotation replacement are original module adapters written against read-only inspection of the target Android 17 SystemUI; no framework code is bundled. The rotation glyph is Material Symbols Rounded `screen_rotation` from the same Apache-2.0 snapshot cited above, stored as `ic_suggestion_rotate.xml`. Iconify (GPL-3.0) was consulted only to compare published slider ranges; no Iconify code, resources or assets are included.
 
+## Independent application volume
+
+Independent app volume: unknown-usage media compatibility follows the issue and narrow fix in [PR #16](https://github.com/AIXINJUELUOAI/NativeComplements/pull/16) by leyodr9000, commit `9466997dab41b232b582df30bce78b6b4b5418a6`. This module checks the actual media-volume mapping for unknown usage and implements AAudio gain composition with its existing window/call multiplier owner. HyperOS audio archives were inspected to understand player-volume lifecycle behavior; no decompiled vendor implementation or binaries are distributed.
+
 ## Retired navigation bar templates
 
 Earlier versions used HyperOS OS4.0.0.19 rule-table data (dataVersion 260904) and HyperNavBar Rules community data (dataVersion 261031). HyperNavBar Rules is MIT, Copyright (c) 2025 Ianzb; source: https://github.com/HyperNavBar/HyperNavBarRules . Those templates, their converter/evaluator and bundled template assets have been removed from the current product. The current immersive-navigation switch uses native SystemUI / supported Taskbar Insets and background-drawing adapters, not that template data. This historical attribution does not claim that the current APK bundles a template license file; applicable notices for earlier versions remain with those versions.

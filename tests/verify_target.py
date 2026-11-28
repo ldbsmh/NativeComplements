@@ -233,6 +233,9 @@ for cls,name,descriptor in [
  ('Landroid/media/AudioPlaybackConfiguration;','getPlayerType','()I'),
  ('Landroid/media/AudioPlaybackConfiguration;','getPlayerProxy','()Landroid/media/PlayerProxy;'),
  ('Landroid/media/PlayerProxy;','setVolume','(F)V'),
+ ('Landroid/media/AudioAttributes;','getVolumeControlStream','()I'),
+ ('Lcom/android/server/audio/AudioService;','systemReady','()V'),
+ ('Lcom/android/server/audio/AudioService$Lifecycle;','onBootPhase','(I)V'),
  ('Lcom/android/server/audio/PlaybackActivityMonitor;','trackPlayer','(Landroid/media/PlayerBase$PlayerIdCard;)I'),
  ('Lcom/android/server/audio/PlaybackActivityMonitor;','releasePlayer','(II)V'),
  ('Lcom/android/server/audio/PlaybackActivityMonitor;','mutePlayersForCall','([I)V'),
@@ -242,6 +245,7 @@ for cls,name,descriptor in [
  assert any(m['name']==name and m['descriptor']==descriptor and not m['access']&8 for m in audio_gain['classes'][cls]['methods']),(cls,name,descriptor)
 for cls,name,descriptor in [
  ('Landroid/media/PlayerProxy;','mConf','Landroid/media/AudioPlaybackConfiguration;'),
+ ('Lcom/android/server/audio/AudioService;','mContext','Landroid/content/Context;'),
  ('Lcom/android/server/audio/PlaybackActivityMonitor;','mPlayers','Ljava/util/HashMap;'),
  ('Lcom/android/server/audio/PlaybackActivityMonitor;','mPlayerLock','Ljava/lang/Object;')]:
  assert any(f['name']==name and f['type']==descriptor and not f['access']&8 for f in audio_gain['classes'][cls]['fields']),(cls,name,descriptor)
