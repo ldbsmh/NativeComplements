@@ -1,6 +1,7 @@
 package dev.local.sunwindowdemo.features.shade;
 
 import android.os.Build;
+import android.view.View;
 import android.view.ViewGroup;
 import io.github.libxposed.api.XposedInterface;
 import java.lang.reflect.Field;
@@ -40,6 +41,9 @@ public final class WifiSignalVisibility {
             ignoredSlots.setAccessible(true);
             var measure = container.getDeclaredMethod("onMeasure", int.class, int.class);
             var layout = container.getDeclaredMethod("onLayout", boolean.class, int.class, int.class, int.class, int.class);
+            if (getSlot.getReturnType() != String.class || isIconVisible.getReturnType() != boolean.class
+                    || isIconBlocked.getReturnType() != boolean.class || measure.getReturnType() != void.class
+                    || layout.getReturnType() != void.class) throw new NoSuchMethodException("status icon ABI");
             hooks.add(module.hook(measure).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(WifiSignalVisibility::applyIconPolicy));
             hooks.add(module.hook(layout).setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
@@ -82,7 +86,7 @@ public final class WifiSignalVisibility {
     private static boolean hasVisibleWifi(ViewGroup container) throws ReflectiveOperationException {
         for (int i = 0; i < container.getChildCount(); i++) {
             var child = container.getChildAt(i);
-            if (displayable.isInstance(child) && WIFI.equals(getSlot.invoke(child))
+            if (child.getVisibility() == View.VISIBLE && displayable.isInstance(child) && WIFI.equals(getSlot.invoke(child))
                     && Boolean.TRUE.equals(isIconVisible.invoke(child))
                     && Boolean.FALSE.equals(isIconBlocked.invoke(child))) return true;
         }

@@ -33,6 +33,10 @@
 
 每个手指只在自身 DOWN 判定：内起点屏蔽至抬起，外起点进入角落仍放行；半径／资格／租约变化只影响新触点。混合输入用原生 `MotionEvent.split` 保留有效 pointer ID、action 与历史；首个有效手指晚于被拒手指时修正整段可见流的 downTime。系统浮层／键盘／截图／展开助手暂停新角落屏蔽，模块保护触区保持可用。不用外接显示器、鼠标或普通应用 Hook 扩大范围；主机检查不能代替设备游戏多指、系统面板及旋转验收。
 
+## 合并信号图标
+
+Android 17 PixelOS 的「合并信号图标」默认关闭。`WifiSignalVisibility` 预检原生 StatusIconContainer／StatusIconDisplayable 接口，在可见且未被系统屏蔽的 Wi-Fi 图标存在时，仅在本次原生测量／布局期间临时忽略 mobile、stacked_mobile 两个槽位，finally 恢复系统原有集合。Wi-Fi 隐藏、系统已屏蔽 Wi-Fi 或开关关闭时不增加忽略项；设置变更请求原生重新布局，不改变信号等级、订阅和连接状态。
+
 ## 独立应用音量
 
 Android 17 dada 的独立应用音量沿用 SystemUI 原生音量面板；媒体／游戏用途，以及未知用途但实际归媒体音量控制的播放器参与识别，排除通话、通知、闹钟、其他用户、系统 UID 和归属不明确的共享 UID。普通播放器沿用独立 VolumeShaper，与小窗静音的 shaper 分开。

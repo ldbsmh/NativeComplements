@@ -152,9 +152,6 @@ fun SuggestionScreen(controller: WindowController, onSupportedApps: () -> Unit) 
                     SuggestionSheet.HeadsetVolume -> {
                         Text("蓝牙耳机音量", style = MaterialTheme.typography.headlineSmall,
                             modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
-                        Text("耳机接管媒体播放时，只降低超过上限的音量。",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 12.dp))
                         val maxVolume = remember(context) {
                             runCatching { context.getSystemService(AudioManager::class.java)
                                 ?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15 }

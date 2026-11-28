@@ -361,7 +361,8 @@ public final class SettingsBackup {
         barrage.put("color", new Field("int", value -> { int n = integer(value, Integer.MIN_VALUE, Integer.MAX_VALUE); if ((n >>> 24) != 255) throw invalid("弹幕颜色必须不透明"); return n; }));
         barrage.put("speed", number(40, 240)); barrage.put("size", number(12, 32));
         Map<String, Field> suggestion = group(groups, "suggestions");
-        bools(suggestion, "enabled", "torch", "bluetooth", "otp", "links", "maps", "awake", "hide_sms", "window", "rotate", "right");
+        bools(suggestion, "enabled", "torch", "bluetooth", "headset_volume", "otp", "links", "maps", "awake", "hide_sms", "window", "rotate", "right");
+        suggestion.put("headset_volume_limit", number(1, 150));
         suggestion.put("delay", number(50, 500)); suggestion.put("duration", number(5, 300)); suggestion.put("size", number(32, 80));
         suggestion.put("bluetooth_app", string(value -> ((String) value).isEmpty() ? value : packageName(value)));
         Map<String, Field> motion = group(groups, "motion_access"); bools(motion, "enabled"); motion.put("default_mode", number(0, 2));

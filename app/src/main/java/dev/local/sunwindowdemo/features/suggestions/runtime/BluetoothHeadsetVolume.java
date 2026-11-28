@@ -62,6 +62,7 @@ final class BluetoothHeadsetVolume implements AutoCloseable {
     }
 
     void configure(int newLimit) {
+        if (newLimit < 0 || newLimit > 150) throw new IllegalArgumentException("headset volume limit");
         worker.post(() -> {
             if (limit == newLimit) return;
             limit = newLimit;
