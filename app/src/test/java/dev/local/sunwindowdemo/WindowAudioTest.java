@@ -26,7 +26,7 @@ public class WindowAudioTest {
         @org.robolectric.annotation.Implementation protected List<AudioPlaybackConfiguration> getActivePlaybackConfigurations(){return configs;}
     }
     @Before public void resetSnapshot(){PlaybackSnapshot.configs=List.of();}
-    private static final class NativePlayer implements InvocationHandler {
+    static final class NativePlayer implements InvocationHandler {
         final List<Float> values=new ArrayList<>();boolean fail;
         @Override public Object invoke(Object target,Method method,Object[] args){
             if(method.getName().equals("setVolume")){
@@ -36,7 +36,7 @@ public class WindowAudioTest {
             return null;
         }
     }
-    private static NativePlayer nativePlayer(AudioPlaybackConfiguration config)throws Exception{
+    static NativePlayer nativePlayer(AudioPlaybackConfiguration config)throws Exception{
         NativePlayer nativePlayer=new NativePlayer();
         Class<?> iplayer=Class.forName("android.media.IPlayer");
         Object proxy=Proxy.newProxyInstance(iplayer.getClassLoader(),new Class<?>[]{iplayer},nativePlayer);
@@ -106,13 +106,13 @@ public class WindowAudioTest {
         player.mute(false,v->{values.add(v);return null;});assertEquals(List.of(.4f,0f,.4f),values);
     }
 
-    @SuppressWarnings("unchecked") private static Map<Integer,WindowAudioGain.Player> players(WindowAudioGain gain)throws Exception{
+    @SuppressWarnings("unchecked") static Map<Integer,WindowAudioGain.Player> players(WindowAudioGain gain)throws Exception{
         Field field=WindowAudioGain.class.getDeclaredField("players");field.setAccessible(true);return (Map<Integer,WindowAudioGain.Player>)field.get(gain);
     }
     private static void installed(WindowAudioGain gain)throws Exception{
         Field field=WindowAudioGain.class.getDeclaredField("installed");field.setAccessible(true);field.set(null,gain);
     }
-    private static WindowAudioGain gain()throws Exception{
+    static WindowAudioGain gain()throws Exception{
         // Robolectric's API35 omits API37's AAUDIO constant. Keep the production ABI gate strict;
         // only allocate this fixture without its constructor, still resolving all real proxy methods.
         Class<?> unsafeClass=Class.forName("sun.misc.Unsafe");
@@ -132,7 +132,7 @@ public class WindowAudioTest {
         }
         return gain;
     }
-    private static AudioPlaybackConfiguration config(int id,int uid)throws Exception{
+    static AudioPlaybackConfiguration config(int id,int uid)throws Exception{
         Constructor<AudioPlaybackConfiguration> ctor=AudioPlaybackConfiguration.class.getDeclaredConstructor(int.class);ctor.setAccessible(true);
         AudioPlaybackConfiguration config=ctor.newInstance(id);
         for(String name:List.of("mClientUid","mPlayerType")){
@@ -141,6 +141,32 @@ public class WindowAudioTest {
         return config;
     }
     @After public void clearInstalled()throws Exception{installed(null);}
+
+    @Test public void independentGainComposesWithWindowMuteAndLatestCallGain()throws Throwable{
+        WindowAudioGain.Player player=new WindowAudioGain.Player(UID);
+        List<Float> values=new ArrayList<>();
+        WindowAudioGain.VolumeCall call=v->{values.add(v);return null;};
+        player.gain(.5f,call);
+        player.mute(true,call);
+        player.external(.3f,call);
+        player.gain(.2f,call);
+        player.mute(false,call);
+        player.gain(1f,call);
+        assertEquals(List.of(.5f,0f,0f,0f,.3f*.2f,.3f),values);
+    }
+
+    @Test public void failedGainWriteDoesNotCommitAndResetKeepsSystemMute()throws Throwable{
+        WindowAudioGain.Player player=new WindowAudioGain.Player(UID);
+        List<Float> values=new ArrayList<>();
+        WindowAudioGain.VolumeCall call=v->{values.add(v);return null;};
+        player.gain(.5f,call);
+        try{player.gain(.2f,v->{throw new IllegalStateException("binder");});fail();}
+        catch(IllegalStateException expected){}
+        player.external(.4f,call);
+        player.external(0f,call);
+        player.gain(1f,call);
+        assertEquals(List.of(.5f,.2f,0f,0f),values);
+    }
 
     @Test public void unknownAAudioIsRejectedRatherThanReportedAsShapedSuccess()throws Exception{
         WindowAudioGain gain=gain();installed(gain);

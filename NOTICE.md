@@ -6,6 +6,7 @@ Assets are stored as ic_game_*.xml, ic_qs_*.xml, ic_suggestion_*.xml and ic_barr
 ic_flashlight_off and ic_statusbar_airplanemode (ic_qs_flashlight.xml, ic_qs_airplane.xml), Apache-2.0.
 Source: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/packages/SystemUI/res/drawable/
 Theme/state tint is applied by the native ImageView; the fixed white disc and black glyph styling are module UI code.
+The Bluetooth headset volume suggestion combines the `headphones`, `bluetooth`, and `arrow_downward` vectors from the same revision. Scaling, placement, and conditional display of the arrow are module adaptations.
 
 Geometry.java adapts the mini-window scale constants, 9:16 canvas ratio and opposite-orientation scale factor from WindowResizingAlgorithm.java, Copyright (C) 2023-2024 The Nameless-AOSP Project, SPDX-License-Identifier: Apache-2.0.
 
@@ -55,6 +56,10 @@ Preview20: mini menu vector icons, circle/menu shapes, colors, 42dp buttons and 
 0.7.8: fixed #FFF0F2F2 handle and .4 normal-window background dim amount follow MiniWindowEdgeBarHelper.java and DimmerWindow.java from SunOS android_sun-sdk commit 1f4bd2d7494dc2c317d86d156dcb3fc234a88aae (The Nameless-AOSP Project, Apache-2.0). The below-task SurfaceControl color-layer adapter, shared WM-lock frame guard, and removal of sampled handle contrast are module changes, not a transplant of TYPE_MINI_WINDOW_DIMMER.
 
 0.9.12: the status-bar vertical offset and the suggestion-row rotation replacement are original module adapters written against read-only inspection of the target Android 17 SystemUI; no framework code is bundled. The rotation glyph is Material Symbols Rounded `screen_rotation` from the same Apache-2.0 snapshot cited above, stored as `ic_suggestion_rotate.xml`. Iconify (GPL-3.0) was consulted only to compare published slider ranges; no Iconify code, resources or assets are included.
+
+## Independent application volume
+
+Independent app volume: unknown-usage media compatibility follows the issue and narrow fix in [PR #16](https://github.com/AIXINJUELUOAI/NativeComplements/pull/16) by leyodr9000, commit `9466997dab41b232b582df30bce78b6b4b5418a6`. This module checks the actual media-volume mapping for unknown usage and implements AAudio gain composition with its existing window/call multiplier owner. HyperOS audio archives were inspected to understand player-volume lifecycle behavior; no decompiled vendor implementation or binaries are distributed.
 
 ## Retired navigation bar templates
 

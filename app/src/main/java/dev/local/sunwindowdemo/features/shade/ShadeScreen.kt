@@ -21,6 +21,7 @@ fun ShadeScreen(bottomInset: Dp = 0.dp, desktopExtras: @Composable () -> Unit = 
     val context = LocalContext.current
     var enabled by remember { mutableStateOf(ShadeStore.read(context).getBoolean("enabled")) }
     var appVolume by remember { mutableStateOf(ShadeStore.read(context).getBoolean("appVolume")) }
+    var volumePercentage by remember { mutableStateOf(ShadeStore.appVolumePercentage(context)) }
     var drawerMonet by remember { mutableStateOf(ShadeStore.drawerMonet(context)) }
     var coverMonet by remember { mutableStateOf(ShadeStore.coverMonet(context)) }
     var lockscreenDoubleTapSleep by remember { mutableStateOf(ShadeStore.lockscreenDoubleTapSleep(context)) }
@@ -30,6 +31,8 @@ fun ShadeScreen(bottomInset: Dp = 0.dp, desktopExtras: @Composable () -> Unit = 
     var notificationIconScale by remember { mutableIntStateOf(ShadeStore.iconScale(context, true)) }
     var systemIconScale by remember { mutableIntStateOf(ShadeStore.iconScale(context, false)) }
     var signalDisplay by remember { mutableStateOf(ShadeStore.read(context).getBoolean("signalDisplay")) }
+    val pixelOs = remember(context) { PixelOsShade.supports(context) }
+    var mergeSignalIcons by remember { mutableStateOf(ShadeStore.mergeSignalIcons(context)) }
     var floatingCallRefresh by remember { mutableStateOf(ShadeStore.floatingCallRefresh(context)) }
     var navbarImmersive by remember { mutableStateOf(NavbarStore.preferences(context).getBoolean("enabled", false)) }
     DisposableEffect(context) {
@@ -37,6 +40,7 @@ fun ShadeScreen(bottomInset: Dp = 0.dp, desktopExtras: @Composable () -> Unit = 
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
             enabled = ShadeStore.read(context).getBoolean("enabled")
             appVolume = ShadeStore.read(context).getBoolean("appVolume")
+            volumePercentage = ShadeStore.appVolumePercentage(context)
             drawerMonet = ShadeStore.drawerMonet(context)
             coverMonet = ShadeStore.coverMonet(context)
             desktopDoubleTapSleep = ShadeStore.desktopDoubleTapSleep(context)
@@ -45,6 +49,7 @@ fun ShadeScreen(bottomInset: Dp = 0.dp, desktopExtras: @Composable () -> Unit = 
             notificationIconScale = ShadeStore.iconScale(context, true)
             systemIconScale = ShadeStore.iconScale(context, false)
             signalDisplay = ShadeStore.read(context).getBoolean("signalDisplay")
+            mergeSignalIcons = ShadeStore.mergeSignalIcons(context)
             floatingCallRefresh = ShadeStore.floatingCallRefresh(context)
         }
         val icons = IconLayerStore.prefs(context)
@@ -97,6 +102,10 @@ fun ShadeScreen(bottomInset: Dp = 0.dp, desktopExtras: @Composable () -> Unit = 
             ToggleRow("信号显示调整", value = signalDisplay) {
                 ShadeStore.setSignalDisplay(context, it)
             }
+            if (pixelOs) {
+                ToggleRow("合并信号图标",
+                    value = mergeSignalIcons) { ShadeStore.setMergeSignalIcons(context, it) }
+            }
             SliderRow("通知图标大小",
                 value = notificationIconScale, range = 80..120, unit = "%") {
                 ShadeStore.setIconScale(context, true, it)
@@ -113,7 +122,7 @@ fun ShadeScreen(bottomInset: Dp = 0.dp, desktopExtras: @Composable () -> Unit = 
             android.os.Process.myUserHandle() == android.os.UserHandle.getUserHandleForUid(android.os.Process.SYSTEM_UID)) {
             GroupTitle("显示")
             SettingsGroup {
-                ToggleRow("视频悬浮窗保持高刷", "QQ、微信的视频悬浮窗不会将前台应用限制在 60 Hz",
+                ToggleRow("视频悬浮窗保持高刷",
                     value = floatingCallRefresh) { ShadeStore.setFloatingCallRefresh(context, it) }
                 displayExtras()
             }
@@ -121,8 +130,11 @@ fun ShadeScreen(bottomInset: Dp = 0.dp, desktopExtras: @Composable () -> Unit = 
         if (android.os.Build.VERSION.SDK_INT == 37 && android.os.Build.DEVICE == "dada") {
             GroupTitle("音量")
             SettingsGroup {
-                ToggleRow("独立应用音量", "为当前播放媒体的应用显示单独的音量滑杆", value = appVolume) {
+                ToggleRow("独立应用音量", value = appVolume) {
                     ShadeStore.setAppVolume(context, it)
+                }
+                ToggleRow("显示音量百分比", value = volumePercentage, enabled = appVolume) {
+                    ShadeStore.setAppVolumePercentage(context, it)
                 }
             }
         }

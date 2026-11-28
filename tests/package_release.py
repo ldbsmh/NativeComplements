@@ -71,7 +71,9 @@ def main():
         assert not any(name.startswith("assets/licenses/openalive/") for name in names), "Removed Alive asset in APK"
         required_types = {"Ldev/local/sunwindowdemo/" + name + ";" for name in (
             "CornerGesture", "FanView", "AndroidWindowAdmission", "WindowAdmission",
-            "SwipeMini", "DesktopDoubleTap", "DesktopSleepHost")}
+            "SwipeMini", "DesktopDoubleTap", "DesktopSleepHost", "AppVolumeHost", "BluetoothHeadsetVolume")}
+        required_types.add("Ldev/local/sunwindowdemo/features/appvolume/MediaPlayers;")
+        required_types.add("Ldev/local/sunwindowdemo/features/shade/WifiSignalVisibility;")
         required_types |= {"Ldev/local/sunwindowdemo/" + name + ";" for name in ("GameModeHost", "GameCornerOverlay", "SuggestionEnvironment", "SuggestionInput")}
         required_types |= {"Ldev/local/sunwindowdemo/features/gamemode/" + name + ";" for name in ("GameModeStore", "GameCornerGeometry", "GameHandleGeometry", "GameHandlePositionSettingsKt")}
         required_types |= {"Ldev/local/sunwindowdemo/features/edgetouch/" + name + ";" for name in ("EdgeInputFilter", "EdgeInputPolicy", "GameCornerAccess")}

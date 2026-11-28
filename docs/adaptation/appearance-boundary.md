@@ -33,6 +33,16 @@
 
 每个手指只在自身 DOWN 判定：内起点屏蔽至抬起，外起点进入角落仍放行；半径／资格／租约变化只影响新触点。混合输入用原生 `MotionEvent.split` 保留有效 pointer ID、action 与历史；首个有效手指晚于被拒手指时修正整段可见流的 downTime。系统浮层／键盘／截图／展开助手暂停新角落屏蔽，模块保护触区保持可用。不用外接显示器、鼠标或普通应用 Hook 扩大范围；主机检查不能代替设备游戏多指、系统面板及旋转验收。
 
+## 合并信号图标
+
+Android 17 PixelOS 的「合并信号图标」默认关闭。`WifiSignalVisibility` 预检原生 StatusIconContainer／StatusIconDisplayable 接口，在可见且未被系统屏蔽的 Wi-Fi 图标存在时，仅在本次原生测量／布局期间临时忽略 mobile、stacked_mobile 两个槽位，finally 恢复系统原有集合。Wi-Fi 隐藏、系统已屏蔽 Wi-Fi 或开关关闭时不增加忽略项；设置变更请求原生重新布局，不改变信号等级、订阅和连接状态。
+
+## 独立应用音量
+
+Android 17 dada 的独立应用音量沿用 SystemUI 原生音量面板；媒体／游戏用途，以及未知用途但实际归媒体音量控制的播放器参与识别，排除通话、通知、闹钟、其他用户、系统 UID 和归属不明确的共享 UID。普通播放器沿用独立 VolumeShaper，与小窗静音的 shaper 分开。
+
+AAudio 使用系统侧 `AppVolumeHost` 与[共用音量乘子](<../../app/src/main/java/dev/local/sunwindowdemo/features/floatingwindow/legacy/WindowAudioGain.java>)，不依赖小窗总开关或后端所有权。固定广播只接受本用户真实系统 SystemUI UID，核实目标 UID 的唯一包归属、0～100 音量及客户端 Binder 存活；不开放通用音频命令。系统侧串行处理，新播放器从已观察的出生基线继承音量，应用衰减、小窗静音与最新原生通话乘子合成。关闭开关或客户端死亡清除衰减，恢复失败由原工作线程重试，播放器释放后停止；SystemUI 仅在系统侧确认通路就绪后显示 AAudio 滑杆。设置与滑杆仍在 SystemUI 本地保存，不增加应用作用域，不改全局媒体音量。
+
 ## 授权与失败
 
 [NavbarProvider](<../../app/src/main/java/dev/local/sunwindowdemo/features/navbar/NavbarProvider.java>)只向自身、实际 SystemUI及已知系统实际 HOME／本用户 UID 返回只读开关；无普通 app 或 server 导航 Hook。配置线程异步读取，main 发布／重排。读取失败关闭覆盖、重建原生并延迟重试。

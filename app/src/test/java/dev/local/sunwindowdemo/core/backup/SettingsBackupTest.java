@@ -120,22 +120,30 @@ public class SettingsBackupTest {
     }
 
     @Test public void structuredRulesOrderedListsLegacyNumbersAndMigrationRoundTrip(){
-        String rules="{\"example.one\":{\"mode\":\"STRICT\",\"batch\":\"FREEZE\",\"processes\":{\"example.one:worker\":\"TRIM\"},\"keep_active\":true}}";
+        String rules="{\"example.one\":{\"mode\":\"STRICT\",\"batch\":\"FREEZE\",\"processes\":{\"example.one:worker\":\"TRIM\"},\"keep_active\":true,\"protect_background\":true}}";
         String locks="{\"example.one\":{\"delay\":30,\"budget\":15,\"period\":60},\"example.two\":false}";
         prefs("background_management").edit().putString("rules",rules).putString("background_wake_locks",locks).commit();
         prefs("motion_access").edit().putInt("default_mode",1).putString("rules","{\"example.one\":2}").commit();
         prefs("game_mode").edit().putInt("corner_radius_percent",10).putString("quick","mute,dnd")
                 .putString("quick_apps","example.two,example.one").putFloat("handle_position_portrait",.75f).commit();
         prefs("barrage").edit().putBoolean("migrated",true).putBoolean("enabled",true).putInt("lines",5).commit();
-        prefs("landscape_shade").edit().putInt("notification_icon_scale",110).putBoolean("cover_monet",true).commit();
+        prefs("landscape_shade").edit().putInt("notification_icon_scale",110).putBoolean("cover_monet",true)
+                .putBoolean("merge_signal_icons",true).putBoolean("app_volume_percentage",false).commit();
         prefs("navbar_immersive").edit().putBoolean("enabled",true).commit();
-        prefs("suggestions").edit().putString("bluetooth_app","example.one").putInt("size",64).commit();
+        prefs("suggestions").edit().putString("bluetooth_app","example.one").putInt("size",64)
+                .putBoolean("headset_volume",true).putInt("headset_volume_limit",3).commit();
         prefs("icon_layers").edit().putInt("mode",2).putStringSet("originals",Set.of("example.one"))
                 .putString("policies","local-image-reference").commit();
         byte[] exported=SettingsBackup.export(context);
+        prefs("suggestions").edit().remove("headset_volume").remove("headset_volume_limit").commit();
+        prefs("landscape_shade").edit().remove("merge_signal_icons").putBoolean("app_volume_percentage",true).commit();
         assertFalse(new String(exported,StandardCharsets.UTF_8).contains("local-image-reference"));
         prefs("barrage").edit().remove("migrated").putBoolean("enabled",false).commit();
         SettingsBackup.restore(context,SettingsBackup.parse(exported));
+        assertTrue(prefs("suggestions").getBoolean("headset_volume",false));
+        assertEquals(3,prefs("suggestions").getInt("headset_volume_limit",0));
+        assertTrue(prefs("landscape_shade").getBoolean("merge_signal_icons",false));
+        assertFalse(prefs("landscape_shade").getBoolean("app_volume_percentage",true));
         assertEquals(rules,prefs("background_management").getString("rules",""));
         assertEquals(locks,prefs("background_management").getString("background_wake_locks",""));
         assertEquals("{\"example.one\":2}",prefs("motion_access").getString("rules",""));

@@ -344,7 +344,7 @@ public final class SettingsBackup {
         corner.put("blocked", packages(512)); corner.put("windowExcludedPackages", packages(512));
         Map<String, Field> dark = group(groups, "dark_aod"); bools(dark, "enabled"); dark.put("dark_lux", decimal(0, 5));
         Map<String, Field> shade = group(groups, "landscape_shade");
-        bools(shade, "enabled", "signal_display", "drawer_monet", "cover_monet", "desktop_double_tap_sleep", "lockscreen_double_tap_sleep", "floating_call_refresh", "app_volume");
+        bools(shade, "enabled", "signal_display", "merge_signal_icons", "drawer_monet", "cover_monet", "desktop_double_tap_sleep", "lockscreen_double_tap_sleep", "floating_call_refresh", "app_volume", "app_volume_percentage");
         shade.put("status_bar_offset", number(-32, 32)); shade.put("notification_icon_scale", number(80, 120)); shade.put("system_icon_scale", number(80, 120));
         bools(group(groups, "navbar_immersive"), "enabled");
         Map<String, Field> edge = group(groups, "edge_touch"); bools(edge, "enabled", "left_enabled", "right_enabled");
@@ -361,7 +361,8 @@ public final class SettingsBackup {
         barrage.put("color", new Field("int", value -> { int n = integer(value, Integer.MIN_VALUE, Integer.MAX_VALUE); if ((n >>> 24) != 255) throw invalid("弹幕颜色必须不透明"); return n; }));
         barrage.put("speed", number(40, 240)); barrage.put("size", number(12, 32));
         Map<String, Field> suggestion = group(groups, "suggestions");
-        bools(suggestion, "enabled", "torch", "bluetooth", "otp", "links", "maps", "awake", "hide_sms", "window", "rotate", "right");
+        bools(suggestion, "enabled", "torch", "bluetooth", "headset_volume", "otp", "links", "maps", "awake", "hide_sms", "window", "rotate", "right");
+        suggestion.put("headset_volume_limit", number(1, 150));
         suggestion.put("delay", number(50, 500)); suggestion.put("duration", number(5, 300)); suggestion.put("size", number(32, 80));
         suggestion.put("bluetooth_app", string(value -> ((String) value).isEmpty() ? value : packageName(value)));
         Map<String, Field> motion = group(groups, "motion_access"); bools(motion, "enabled"); motion.put("default_mode", number(0, 2));
@@ -423,10 +424,10 @@ public final class SettingsBackup {
     private static Object backgroundRules(Object value) {
         for (var entry : packageMap(value, 512).entrySet()) {
             Map<String, Object> row = object(entry.getValue());
-            keys(row, Set.of("mode", "batch", "processes", "protect_playback", "keep_active"));
+            keys(row, Set.of("mode", "batch", "processes", "protect_playback", "keep_active", "protect_background"));
             if (row.containsKey("mode")) enumValue(BackgroundPolicy.Mode.class, row.get("mode"));
             if (row.containsKey("batch") && !Set.of("ALLOW", "FREEZE").contains(row.get("batch"))) throw invalid("无效批量动作");
-            for (String key : new String[]{"protect_playback", "keep_active"}) if (row.containsKey(key)) BOOL.validate(row.get(key));
+            for (String key : new String[]{"protect_playback", "keep_active", "protect_background"}) if (row.containsKey(key)) BOOL.validate(row.get(key));
             if (row.containsKey("protect_playback") && !BackgroundPolicy.supportsPlaybackOverride(entry.getKey())) throw invalid("该应用不支持播放保护覆盖");
             if (row.containsKey("processes")) {
                 Map<String, Object> processes = object(row.get("processes"));
